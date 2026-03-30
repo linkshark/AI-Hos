@@ -1,0 +1,341 @@
+# AiMed 本地运行说明
+
+本文档对应当前仓库的本地开发环境，目标是把后端、Mongo、MySQL、本地 Ollama 与前端一起跑通，并保留千问在线作为可切换入口。
+
+## 1. 环境前提
+
+- Java 17 优先；本机若继续使用 Java 25，先尝试直接运行，若有兼容问题再使用文末的 Docker/JDK17 兜底方案
+- Maven 3.9+
+- Node.js 20+
+- Docker Desktop
+- 本地 MySQL 已启动
+- 本地 Redis 已启动
+
+当前代码没有实际使用 Redis，所以 Redis 不是后端启动阻塞项。
+
+## 2. 本地依赖配置
+
+### 2.1 MySQL
+
+项目默认读取以下环境变量：
+
+```bash
+export SPRING_DATASOURCE_URL='jdbc:mysql://localhost:3306/aimed?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true'
+export SPRING_DATASOURCE_USERNAME='root'
+export SPRING_DATASOURCE_PASSWORD='你的MySQL密码'
+export SERVER_ADDRESS='0.0.0.0'
+```
+
+初始化数据库：
+
+```bash
+mysql -h 127.0.0.1 -P 3306 -u root -p < sql/init_aimed.sql
+```
+
+### 2.2 MongoDB
+
+使用 Docker 启动本地 MongoDB：
+
+```bash
+docker compose up -d mongodb
+```
+
+默认连接串：
+
+```bash
+export SPRING_DATA_MONGODB_URI='mongodb://localhost:27017/chat_memory_db'
+```
+
+### 2.3 千问在线
+
+千问在线入口读取：
+
+```bash
+export BL_KEY='你的百炼 API Key'
+```
+
+### 2.4 本地 Ollama Embedding
+
+RAG 向量模型默认改为本机 Ollama，不再依赖百炼 `text-embedding-v3`：
+
+```bash
+export EMBEDDING_BASE_URL='http://localhost:11434'
+export EMBEDDING_MODEL_NAME='bge-m3:latest'
+```
+
+本机已安装 Ollama 时可先确认模型存在：
+
+```bash
+ollama list
+```
+
+### 2.5 本地主聊天模型
+
+聊天主模型默认改为本机 Ollama，推荐这台机器使用：
+
+```bash
+export LOCAL_CHAT_BASE_URL='http://localhost:11434'
+export LOCAL_CHAT_MODEL_NAME='qwen2.5:3b'
+```
+
+### 2.6 本地视觉模型
+
+图片分析默认也可以走本机 Ollama，推荐这台机器使用：
+
+```bash
+export LOCAL_VISION_BASE_URL='http://localhost:11434'
+export LOCAL_VISION_MODEL_NAME='qwen2.5vl:7b'
+```
+
+首次使用前建议确认模型已存在：
+
+```bash
+ollama show qwen2.5vl:7b
+```
+
+当前项目策略：
+
+- 默认主聊天模型：本地 `qwen2.5:3b`
+- 默认图片分析模型：本地 `qwen2.5vl:7b`
+- RAG embedding：本地 `bge-m3:latest`
+- 千问在线：作为可切换入口保留，主要用于需要更高回答质量或在线视觉兜底的场景
+
+模型选择说明：
+
+- `qwen2.5:3b` 是当前默认离线文本模型，响应更快，也不会像思维链模型那样在当前流式链路里空转
+- `qwen2.5vl:7b` 支持中文 OCR 和通用视觉理解，适合病历截图、检查单照片、报告图片这类离线分析场景
+
+## 3. 启动后端
+
+在仓库根目录执行：
+
+```bash
+mvn spring-boot:run
+```
+
+启动成功后可以访问：
+
+- Knife4j: [http://localhost:8080/doc.html](http://localhost:8080/doc.html)
+- 接口: `POST /aimed/chat`
+
+如果你希望一次性带齐本地离线相关环境变量，可以使用：
+
+```bash
+export SPRING_DATASOURCE_URL='jdbc:mysql://localhost:3306/aimed?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true'
+export SPRING_DATASOURCE_USERNAME='root'
+export SPRING_DATASOURCE_PASSWORD='你的MySQL密码'
+export SPRING_DATA_MONGODB_URI='mongodb://localhost:27017/chat_memory_db'
+export SERVER_ADDRESS='0.0.0.0'
+export BL_KEY='你的百炼 API Key'
+export EMBEDDING_BASE_URL='http://localhost:11434'
+export EMBEDDING_MODEL_NAME='bge-m3:latest'
+export LOCAL_CHAT_BASE_URL='http://localhost:11434'
+export LOCAL_CHAT_MODEL_NAME='qwen2.5:3b'
+export LOCAL_VISION_BASE_URL='http://localhost:11434'
+export LOCAL_VISION_MODEL_NAME='qwen2.5vl:7b'
+mvn spring-boot:run
+```
+
+示例请求：
+
+```bash
+curl -N \
+  -H 'Content-Type: application/json' \
+  -X POST http://localhost:8080/aimed/chat \
+  -d '{"memoryId":1,"message":"你好，请介绍一下医院信息"}'
+```
+
+## 4. 启动前端
+
+前端使用 Vite 代理 `/api` 到后端，默认目标地址是 `http://localhost:8080`，也可以通过环境变量覆盖：
+
+```bash
+cd aimed-ui
+export VITE_API_BASE_URL='http://localhost:8080'
+export VITE_DEV_HOST='0.0.0.0'
+export VITE_DEV_PORT='5173'
+npm install
+npm run dev
+```
+
+启动后访问：
+
+- 前端页面: [http://localhost:5173](http://localhost:5173)
+
+## 4.1 局域网访问
+
+当前项目已默认支持局域网访问：
+
+- 后端默认监听 `0.0.0.0:8080`
+- 前端 Vite 开发服务默认监听 `0.0.0.0:5173`
+
+先查看你本机的局域网 IP，例如：
+
+```bash
+ipconfig getifaddr en0
+```
+
+假设返回 `192.168.20.123`，则同一局域网内其它设备可以通过以下地址访问：
+
+- 前端页面: `http://192.168.20.123:5173`
+- 后端文档: `http://192.168.20.123:8080/doc.html`
+
+说明：
+
+- 前端仍通过本机 Vite 代理访问后端，所以 `VITE_API_BASE_URL` 保持 `http://localhost:8080` 即可
+- 若你换了 Wi-Fi 网卡，可把 `en0` 改成实际网卡名
+- 若系统防火墙拦截，请允许 Java 和 Node.js 接收入站连接
+
+## 5. 本地联调验证
+
+### 5.1 聊天接口
+
+- 打开前端页面后，会先显示一条静态欢迎消息，不会立即触发本地模型推理
+- 页面能持续收到流式回复，说明前后端联调正常
+- 页面顶部可以在 `本地 Ollama` 和 `千问在线` 之间切换
+- 本地 Ollama 模式下：
+  - 文本问答走 `qwen2.5:3b`
+  - 图片分析走 `qwen2.5vl:7b`
+- 千问在线模式下：
+  - 文本和图片继续走百炼兼容接口
+
+### 5.2 Mongo 聊天记忆
+
+```bash
+docker exec -it aimed-mongo mongosh chat_memory_db --eval 'db.chat_messages.find().pretty()'
+```
+
+### 5.3 MySQL 预约数据
+
+```bash
+mysql -h 127.0.0.1 -P 3306 -u root -p -D aimed -e 'select * from appointment;'
+```
+
+## 6. 当前实现说明
+
+- RAG 已切换为本地内存向量库
+- 应用启动时会自动加载 `src/main/resources/knowledge` 下的 `.md`、`.txt`、`.pdf` 文档
+- 运行中可通过 `POST /aimed/knowledge/upload` 动态上传知识文件，支持 `pdf/doc/docx/md/txt/csv/rtf/html/xml/odt/ods/odp/xls/xlsx/ppt/pptx`
+- 运行中上传的知识文件会保存到 `data/knowledge-base`，重启后会自动重新加载
+- 上传接口在文件保存完成后会立即返回 `QUEUED`，后续解析、RAG 切分、向量化由后台线程池异步完成
+- 知识库管理页会通过 WebSocket `ws://<host>:8080/ws/knowledge` 接收 `READY` / `FAILED` 通知，并自动刷新详情与切分结果
+- 知识库文件状态会同步写入 MySQL 表 `knowledge_file_status`，即使应用重启也能保留当前处理状态和基础元数据
+- 向量数据仅驻留内存，重启后会重新加载
+- Mongo 负责持久化聊天记忆
+- MySQL 负责预约挂号数据
+- 图片附件不会写入知识库，只参与当前这轮对话分析
+
+### 6.1 上传知识文件
+
+示例：
+
+```bash
+curl -X POST http://localhost:8080/aimed/knowledge/upload \
+  -F 'files=@/path/to/knowledge.md' \
+  -F 'files=@/path/to/manual.pdf'
+```
+
+典型返回：
+
+```json
+{
+  "accepted": 1,
+  "items": [
+    {
+      "status": "QUEUED",
+      "message": "文件已上传，正在后台解析并构建 RAG 切分",
+      "hash": "..."
+    }
+  ]
+}
+```
+
+查看已上传的知识文件：
+
+```bash
+curl http://localhost:8080/aimed/knowledge/files
+```
+
+如需跳过启动时的知识库预加载，避免本地 Ollama 在开发阶段被启动任务占满，可临时加：
+
+```bash
+export KNOWLEDGE_BASE_BOOTSTRAP_ENABLED='false'
+```
+
+如果本地 Ollama 偶发出现 `I/O error on POST request for "http://localhost:11434/api/embed": null`，当前版本已经做了两层兜底：
+
+- embedding 请求默认最多重试 `3` 次
+- 知识文件向量化改为串行提交，避免启动预加载和新上传任务并发打满本地 Ollama
+- 对超大文档会自动放大切分粒度，并把 embedding 分批提交，避免单次请求超时
+
+相关环境变量：
+
+```bash
+export EMBEDDING_MAX_ATTEMPTS='3'
+export EMBEDDING_RETRY_DELAY='PT2S'
+export EMBEDDING_BATCH_SIZE='24'
+export KNOWLEDGE_CHUNK_SIZE='1000'
+export KNOWLEDGE_CHUNK_OVERLAP='150'
+export KNOWLEDGE_MAX_CHUNK_SIZE='4000'
+export KNOWLEDGE_MAX_SEGMENTS_PER_DOCUMENT='1200'
+```
+
+## 7. 常见问题
+
+### 7.1 `BL_KEY` 未设置
+
+表现：启动时报模型鉴权或 Bean 初始化错误。
+
+处理：重新导出环境变量后再启动后端。
+
+### 7.2 Mongo 连接失败
+
+表现：启动时报 `MongoTimeoutException` 或聊天记忆写入失败。
+
+处理：
+
+```bash
+docker compose ps
+docker compose up -d mongodb
+```
+
+### 7.3 MySQL 连接失败
+
+表现：启动时报 JDBC 连接错误或 `appointment` 表不存在。
+
+处理：
+
+- 确认本地 MySQL 已启动
+- 确认账号密码和端口正确
+- 重新执行 `sql/init_aimed.sql`
+
+### 7.4 前端请求不到后端
+
+表现：浏览器里 `/api/aimed/chat` 报 404 或代理失败。
+
+处理：
+
+- 确认后端在 `8080` 端口正常运行
+- 确认 `VITE_API_BASE_URL` 指向正确地址
+- 重启 `npm run dev`
+
+## 8. Java 25 兼容性兜底
+
+如果本机 Java 25 运行异常，可以直接用 JDK 17 容器启动后端：
+
+```bash
+docker run --rm \
+  --name aimed-backend-build \
+  -p 8080:8080 \
+  -e BL_KEY \
+  -e EMBEDDING_BASE_URL \
+  -e EMBEDDING_MODEL_NAME \
+  -e SPRING_DATASOURCE_URL \
+  -e SPRING_DATASOURCE_USERNAME \
+  -e SPRING_DATASOURCE_PASSWORD \
+  -e SPRING_DATA_MONGODB_URI \
+  -v "$PWD":/workspace \
+  -w /workspace \
+  maven:3.9.9-eclipse-temurin-17 \
+  mvn spring-boot:run
+```

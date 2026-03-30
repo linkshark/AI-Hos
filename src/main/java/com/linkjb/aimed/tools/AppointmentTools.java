@@ -39,6 +39,7 @@ public class AppointmentTools {
                 return "取消预约失败";
             }
         }
+
         //取消失败
         return "您没有预约记录，请核对预约科室和时间";
     }

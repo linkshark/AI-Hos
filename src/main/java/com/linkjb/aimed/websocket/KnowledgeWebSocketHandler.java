@@ -34,6 +34,7 @@ public class KnowledgeWebSocketHandler extends TextWebSocketHandler {
     }
 
     public void broadcast(String payload) {
+
         TextMessage message = new TextMessage(payload);
         for (WebSocketSession session : sessions) {
             if (!session.isOpen()) {

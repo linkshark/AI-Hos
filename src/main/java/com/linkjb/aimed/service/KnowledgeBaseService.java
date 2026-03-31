@@ -73,8 +73,10 @@ public class KnowledgeBaseService {
         CHAT_ATTACHMENT_EXTENSIONS.addAll(IMAGE_EXTENSIONS);
     }
 
-    private final EmbeddingStore<TextSegment> embeddingStore;
-    private final EmbeddingModel embeddingModel;
+    private final EmbeddingStore<TextSegment> localEmbeddingStore;
+    private final EmbeddingStore<TextSegment> onlineEmbeddingStore;
+    private final EmbeddingModel localEmbeddingModel;
+    private final EmbeddingModel onlineEmbeddingModel;
     private final Path storageDirectory;
     private final TaskExecutor knowledgeBootstrapExecutor;
     private final TaskExecutor knowledgeIngestionExecutor;
@@ -93,8 +95,10 @@ public class KnowledgeBaseService {
     private final DocumentParser pdfParser = new ApachePdfBoxDocumentParser();
     private final DocumentParser tikaParser = new ApacheTikaDocumentParser();
 
-    public KnowledgeBaseService(EmbeddingStore<TextSegment> embeddingStore,
-                                EmbeddingModel embeddingModel,
+    public KnowledgeBaseService(@Qualifier("localEmbeddingStore") EmbeddingStore<TextSegment> localEmbeddingStore,
+                                @Qualifier("onlineEmbeddingStore") EmbeddingStore<TextSegment> onlineEmbeddingStore,
+                                @Qualifier("localEmbeddingModel") EmbeddingModel localEmbeddingModel,
+                                @Qualifier("onlineEmbeddingModel") EmbeddingModel onlineEmbeddingModel,
                                 @Qualifier("knowledgeBootstrapExecutor") TaskExecutor knowledgeBootstrapExecutor,
                                 @Qualifier("knowledgeIngestionExecutor") TaskExecutor knowledgeIngestionExecutor,
                                 KnowledgeProcessingNotifier knowledgeProcessingNotifier,
@@ -105,8 +109,10 @@ public class KnowledgeBaseService {
                                 @Value("${app.knowledge-base.max-segments-per-document:1200}") int maxSegmentsPerDocument,
                                 @Value("${app.embedding.batch-size:24}") int embeddingBatchSize,
                                 @Value("${app.knowledge-base.storage-dir:data/knowledge-base}") String storageDir) {
-        this.embeddingStore = embeddingStore;
-        this.embeddingModel = embeddingModel;
+        this.localEmbeddingStore = localEmbeddingStore;
+        this.onlineEmbeddingStore = onlineEmbeddingStore;
+        this.localEmbeddingModel = localEmbeddingModel;
+        this.onlineEmbeddingModel = onlineEmbeddingModel;
         this.knowledgeBootstrapExecutor = knowledgeBootstrapExecutor;
         this.knowledgeIngestionExecutor = knowledgeIngestionExecutor;
         this.knowledgeProcessingNotifier = knowledgeProcessingNotifier;
@@ -133,7 +139,8 @@ public class KnowledgeBaseService {
         ensureStorageDirectoryExists();
         synchronized (this) {
             synchronized (embeddingStoreMonitor) {
-                embeddingStore.removeAll();
+                localEmbeddingStore.removeAll();
+                onlineEmbeddingStore.removeAll();
             }
             ingestedHashes.clear();
             knowledgeRecords.clear();
@@ -588,11 +595,16 @@ public class KnowledgeBaseService {
             segmentIds.add(hash + "-segment-" + (i + 1));
         }
 
-        int effectiveTotalBatches = Math.max(totalBatches, calculateBatchCount(segments.size()));
+        int batchesPerStore = calculateBatchCount(segments.size());
+        int effectiveTotalBatches = Math.max(totalBatches, batchesPerStore * 2);
 
         synchronized (embeddingStoreMonitor) {
-            List<dev.langchain4j.data.embedding.Embedding> embeddings = embedSegmentsInBatches(hash, segments, effectiveTotalBatches);
-            embeddingStore.addAll(segmentIds, embeddings, segments);
+            List<dev.langchain4j.data.embedding.Embedding> localEmbeddings =
+                    embedSegmentsInBatches(hash, segments, 0, effectiveTotalBatches, "本地向量索引", localEmbeddingModel);
+            localEmbeddingStore.addAll(segmentIds, localEmbeddings, segments);
+            List<dev.langchain4j.data.embedding.Embedding> onlineEmbeddings =
+                    embedSegmentsInBatches(hash, segments, batchesPerStore, effectiveTotalBatches, "在线向量索引", onlineEmbeddingModel);
+            onlineEmbeddingStore.addAll(segmentIds, onlineEmbeddings, segments);
         }
         KnowledgeDocumentRecord record = new KnowledgeDocumentRecord(
                 fileName,
@@ -957,18 +969,27 @@ public class KnowledgeBaseService {
 
     private List<dev.langchain4j.data.embedding.Embedding> embedSegmentsInBatches(String hash,
                                                                                   List<TextSegment> segments,
-                                                                                  int totalBatches) {
+                                                                                  int batchOffset,
+                                                                                  int totalBatches,
+                                                                                  String stageLabel,
+                                                                                  EmbeddingModel embeddingModel) {
         List<dev.langchain4j.data.embedding.Embedding> embeddings = new ArrayList<>(segments.size());
-        for (int batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+        int stageBatchCount = calculateBatchCount(segments.size());
+        for (int batchIndex = 0; batchIndex < stageBatchCount; batchIndex++) {
             int start = batchIndex * embeddingBatchSize;
             int end = Math.min(start + embeddingBatchSize, segments.size());
             List<TextSegment> batch = List.copyOf(segments.subList(start, end));
-            int progressPercent = buildProgressPercent(batchIndex + 1, totalBatches);
-            if (shouldLogBatchProgress(batchIndex + 1, totalBatches)) {
-                log.info("knowledge.embedding.batch hash={} batch={}/{} batchSize={} progress={}%",
-                        hash, batchIndex + 1, totalBatches, batch.size(), progressPercent);
+            int visibleBatchIndex = batchOffset + batchIndex + 1;
+            int progressPercent = buildProgressPercent(visibleBatchIndex, totalBatches);
+            if (shouldLogBatchProgress(batchIndex + 1, stageBatchCount)) {
+                log.info("knowledge.embedding.batch hash={} stage={} batch={}/{} totalProgress={}/{} batchSize={} progress={}%",
+                        hash, stageLabel, batchIndex + 1, stageBatchCount, visibleBatchIndex, totalBatches, batch.size(), progressPercent);
             }
-            updateKnowledgeStatus(hash, STATUS_PROCESSING, buildEmbeddingProgressMessage(segments.size(), batchIndex + 1, totalBatches), progressPercent, batchIndex + 1, totalBatches);
+            updateKnowledgeStatus(hash, STATUS_PROCESSING,
+                    buildEmbeddingProgressMessage(segments.size(), visibleBatchIndex, totalBatches, stageLabel),
+                    progressPercent,
+                    visibleBatchIndex,
+                    totalBatches);
             embeddings.addAll(embeddingModel.embedAll(batch).content());
         }
         return embeddings;
@@ -978,11 +999,11 @@ public class KnowledgeBaseService {
         return Math.max(1, (segmentCount + embeddingBatchSize - 1) / embeddingBatchSize);
     }
 
-    private String buildEmbeddingProgressMessage(int segmentCount, int currentBatch, int totalBatches) {
+    private String buildEmbeddingProgressMessage(int segmentCount, int currentBatch, int totalBatches, String stageLabel) {
         if (totalBatches <= 1 || currentBatch <= 0) {
-            return "文档切分完成，共 " + segmentCount + " 段，正在构建向量索引";
+            return "文档切分完成，共 " + segmentCount + " 段，正在构建" + stageLabel;
         }
-        return "文档切分完成，共 " + segmentCount + " 段，正在构建向量索引（" + currentBatch + "/" + totalBatches + "）";
+        return "文档切分完成，共 " + segmentCount + " 段，正在构建" + stageLabel + "（" + currentBatch + "/" + totalBatches + "）";
     }
 
     private int buildProgressPercent(int currentBatch, int totalBatches) {

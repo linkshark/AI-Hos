@@ -14,7 +14,7 @@ public class VisionChatModelConfig {
     OpenAiChatModel qwenVisionChatModel(
             @Value("${app.vision-chat.base-url:https://dashscope.aliyuncs.com/compatible-mode/v1}") String baseUrl,
             @Value("${app.vision-chat.api-key:${BL_KEY}}") String apiKey,
-            @Value("${app.vision-chat.model-name:qwen3-vl-plus}") String modelName,
+            @Value("${app.vision-chat.model-name:qwen3.5-plus}") String modelName,
             @Value("${app.vision-chat.timeout:PT90S}") Duration timeout) {
         return OpenAiChatModel.builder()
                 .baseUrl(baseUrl)

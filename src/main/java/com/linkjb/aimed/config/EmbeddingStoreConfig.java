@@ -2,10 +2,8 @@ package com.linkjb.aimed.config;
 
 import com.linkjb.aimed.service.KnowledgeBaseService;
 import dev.langchain4j.data.segment.TextSegment;
-import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.context.annotation.Bean;
@@ -13,12 +11,15 @@ import org.springframework.context.annotation.Configuration;
 
 @Configuration
 public class EmbeddingStoreConfig {
-    @Autowired
-    private EmbeddingModel embeddingModel;
+    @Bean(name = "localEmbeddingStore")
+    public EmbeddingStore<TextSegment> localEmbeddingStore() {
+        // 本地模式使用独立的内存向量库，避免与在线检索结果串线。
+        return new InMemoryEmbeddingStore<>();
+    }
 
-    @Bean
-    public EmbeddingStore<TextSegment> embeddingStore() {
-        // 本地开发默认使用内存向量库，避免依赖外部 Pinecone 服务。
+    @Bean(name = "onlineEmbeddingStore")
+    public EmbeddingStore<TextSegment> onlineEmbeddingStore() {
+        // 在线模式维护独立的向量索引，配合在线 embedding 模型检索。
         return new InMemoryEmbeddingStore<>();
     }
 

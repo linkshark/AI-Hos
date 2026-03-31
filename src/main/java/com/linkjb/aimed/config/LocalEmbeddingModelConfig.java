@@ -7,16 +7,14 @@ import dev.langchain4j.model.ollama.OllamaEmbeddingModel;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Primary;
 
 import java.time.Duration;
 
 @Configuration
 public class LocalEmbeddingModelConfig {
 
-    @Bean
-    @Primary
-    public EmbeddingModel embeddingModel(
+    @Bean(name = "localEmbeddingModel")
+    public EmbeddingModel localEmbeddingModel(
             @Value("${app.embedding.base-url:http://localhost:11434}") String baseUrl,
             @Value("${app.embedding.model-name:bge-m3:latest}") String modelName,
             @Value("${app.embedding.timeout:PT90S}") Duration timeout,

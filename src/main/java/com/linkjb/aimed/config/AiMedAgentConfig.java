@@ -1,6 +1,7 @@
 package com.linkjb.aimed.config;
 
 import com.linkjb.aimed.store.MongoChatMemoryStore;
+import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.memory.chat.ChatMemoryProvider;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.embedding.EmbeddingModel;
@@ -8,6 +9,7 @@ import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -42,24 +44,37 @@ public class AiMedAgentConfig {
 //    }
 //
     @Autowired
-    private EmbeddingStore embeddingStore;
+    @Qualifier("localEmbeddingStore")
+    private EmbeddingStore<TextSegment> localEmbeddingStore;
     @Autowired
-    private EmbeddingModel embeddingModel;
+    @Qualifier("onlineEmbeddingStore")
+    private EmbeddingStore<TextSegment> onlineEmbeddingStore;
+    @Autowired
+    @Qualifier("localEmbeddingModel")
+    private EmbeddingModel localEmbeddingModel;
+    @Autowired
+    @Qualifier("onlineEmbeddingModel")
+    private EmbeddingModel onlineEmbeddingModel;
 
-    @Bean
-    ContentRetriever contentRetrieverAiMedPincone() {
-        // 创建一个 EmbeddingStoreContentRetriever 对象，用于从嵌入存储中检索内容
+    @Bean(name = "contentRetrieverLocal")
+    ContentRetriever contentRetrieverLocal() {
         return EmbeddingStoreContentRetriever
                 .builder()
-                // 设置用于生成嵌入向量的嵌入模型
-                .embeddingModel(embeddingModel)
-                // 指定要使用的嵌入存储
-                .embeddingStore(embeddingStore)
-                // 设置最大检索结果数量，这里表示最多返回 1 条匹配结果
+                .embeddingModel(localEmbeddingModel)
+                .embeddingStore(localEmbeddingStore)
                 .maxResults(1)
-                // 设置最小得分阈值，只有得分大于等于 0.8 的结果才会被返回
                 .minScore(0.8)
-                // 构建最终的 EmbeddingStoreContentRetriever 实例
+                .build();
+    }
+
+    @Bean(name = "contentRetrieverOnline")
+    ContentRetriever contentRetrieverOnline() {
+        return EmbeddingStoreContentRetriever
+                .builder()
+                .embeddingModel(onlineEmbeddingModel)
+                .embeddingStore(onlineEmbeddingStore)
+                .maxResults(1)
+                .minScore(0.8)
                 .build();
     }
 

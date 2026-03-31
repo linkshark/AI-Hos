@@ -69,6 +69,20 @@ export EMBEDDING_MODEL_NAME='bge-m3:latest'
 ollama list
 ```
 
+当前版本已经把知识库切片和向量落到 MySQL：
+
+- 文件首次入库时才会做切分和 embedding
+- 应用重启时会优先从数据库恢复切片和向量
+- 只有切片缺某一类向量时，才会按当前开关补算缺失部分
+
+如果你希望完全不使用本地 embedding，可直接关闭：
+
+```bash
+export APP_EMBEDDING_LOCAL_ENABLED='false'
+export APP_EMBEDDING_ONLINE_ENABLED='true'
+export ONLINE_EMBEDDING_MODEL_NAME='text-embedding-v4'
+```
+
 ### 2.5 本地主聊天模型
 
 聊天主模型默认改为本机 Ollama，推荐这台机器使用：
@@ -104,6 +118,7 @@ ollama show qwen2.5vl:7b
 
 - `qwen2.5:3b` 是当前默认离线文本模型，响应更快，也不会像思维链模型那样在当前流式链路里空转
 - `qwen2.5vl:7b` 支持中文 OCR 和通用视觉理解，适合病历截图、检查单照片、报告图片这类离线分析场景
+- 如果部署到无 GPU 服务器，建议把主提供方切到在线，并关闭本地模型开关
 
 ## 3. 启动后端
 
@@ -135,6 +150,23 @@ export LOCAL_VISION_BASE_URL='http://localhost:11434'
 export LOCAL_VISION_MODEL_NAME='qwen2.5vl:7b'
 mvn spring-boot:run
 ```
+
+如果你要部署到纯在线服务器，推荐这一组：
+
+```bash
+export APP_PROVIDER_DEFAULT='QWEN_ONLINE'
+export APP_PROVIDER_LOCAL_ENABLED='false'
+export APP_PROVIDER_ONLINE_ENABLED='true'
+export APP_EMBEDDING_LOCAL_ENABLED='false'
+export APP_EMBEDDING_ONLINE_ENABLED='true'
+export ONLINE_EMBEDDING_MODEL_NAME='text-embedding-v4'
+```
+
+这组配置的特点是：
+
+- 聊天、视觉、RAG 都走在线模型
+- 不再依赖宿主机 Ollama
+- token 消耗相对可控，适合小流量上线
 
 示例请求：
 
@@ -267,6 +299,7 @@ export KNOWLEDGE_BASE_BOOTSTRAP_ENABLED='false'
 - embedding 请求默认最多重试 `3` 次
 - 知识文件向量化改为串行提交，避免启动预加载和新上传任务并发打满本地 Ollama
 - 对超大文档会自动放大切分粒度，并把 embedding 分批提交，避免单次请求超时
+- 重启时优先从数据库恢复既有向量，不再默认重新请求 embedding 模型
 
 相关环境变量：
 

@@ -15,6 +15,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -53,6 +54,12 @@ public class AiMedController {
     private KnowledgeBaseService knowledgeBaseService;
     @Autowired
     private VisionChatService visionChatService;
+    @Value("${app.provider.default:LOCAL_OLLAMA}")
+    private String defaultProvider;
+    @Value("${app.provider.local-enabled:true}")
+    private boolean localProviderEnabled;
+    @Value("${app.provider.online-enabled:true}")
+    private boolean onlineProviderEnabled;
 
     @Operation(summary = "对话")
     @PostMapping(value = "/chat", consumes = MediaType.APPLICATION_JSON_VALUE, produces = "text/stream;charset=utf-8")
@@ -132,6 +139,7 @@ public class AiMedController {
         if (QWEN_ONLINE.equals(provider)) {
             return withFluxLogs(provider, memoryId, message, onlineAiMedAgent.chat(memoryId, message));
         }
+        // 本地模型的流式输出由回调驱动，这里桥接成 Reactor Flux 供前端统一消费。
         return Flux.create(emitter -> {
             long startedAt = System.nanoTime();
             AtomicInteger chunkCount = new AtomicInteger();
@@ -174,11 +182,29 @@ public class AiMedController {
     }
 
     private String normalizeProvider(String provider) {
-        if (provider == null) {
+        String requested = provider == null ? defaultProvider : provider;
+        String normalized = requested.trim().toUpperCase(Locale.ROOT);
+        // 优先尊重前端显式选择；如果该提供方被禁用，则自动回退到当前可用的一侧。
+        if (QWEN_ONLINE.equals(normalized)) {
+            if (onlineProviderEnabled) {
+                return QWEN_ONLINE;
+            }
+            return fallbackProvider();
+        }
+        if (localProviderEnabled) {
             return LOCAL_OLLAMA;
         }
-        String normalized = provider.trim().toUpperCase(Locale.ROOT);
-        return QWEN_ONLINE.equals(normalized) ? QWEN_ONLINE : LOCAL_OLLAMA;
+        return fallbackProvider();
+    }
+
+    private String fallbackProvider() {
+        if (localProviderEnabled) {
+            return LOCAL_OLLAMA;
+        }
+        if (onlineProviderEnabled) {
+            return QWEN_ONLINE;
+        }
+        throw new IllegalStateException("未启用任何可用的大模型提供方，请检查 app.provider.* 配置");
     }
 
     private String errorMessageForProvider(String provider) {

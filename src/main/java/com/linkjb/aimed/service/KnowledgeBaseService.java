@@ -1,16 +1,20 @@
 package com.linkjb.aimed.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.linkjb.aimed.bean.KnowledgeChunkInfo;
 import com.linkjb.aimed.bean.KnowledgeDocumentDetail;
 import com.linkjb.aimed.bean.KnowledgeFileInfo;
 import com.linkjb.aimed.bean.KnowledgeUploadItem;
 import com.linkjb.aimed.bean.KnowledgeUploadResponse;
+import com.linkjb.aimed.entity.KnowledgeChunkIndex;
 import com.linkjb.aimed.entity.KnowledgeFileStatus;
 import dev.langchain4j.data.document.BlankDocumentException;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.document.DocumentParser;
 import dev.langchain4j.data.document.DocumentSplitter;
 import dev.langchain4j.data.document.Metadata;
+import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.document.parser.TextDocumentParser;
 import dev.langchain4j.data.document.parser.apache.pdfbox.ApachePdfBoxDocumentParser;
 import dev.langchain4j.data.document.parser.apache.tika.ApacheTikaDocumentParser;
@@ -40,6 +44,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -82,6 +87,8 @@ public class KnowledgeBaseService {
     private final TaskExecutor knowledgeIngestionExecutor;
     private final KnowledgeProcessingNotifier knowledgeProcessingNotifier;
     private final KnowledgeFileStatusService knowledgeFileStatusService;
+    private final KnowledgeChunkIndexService knowledgeChunkIndexService;
+    private final ObjectMapper objectMapper;
     private final Set<String> ingestedHashes = ConcurrentHashMap.newKeySet();
     private final Map<String, KnowledgeDocumentRecord> knowledgeRecords = new ConcurrentHashMap<>();
     private final Object embeddingStoreMonitor = new Object();
@@ -90,6 +97,8 @@ public class KnowledgeBaseService {
     private final int maxChunkSize;
     private final int maxSegmentsPerDocument;
     private final int embeddingBatchSize;
+    private final boolean localEmbeddingEnabled;
+    private final boolean onlineEmbeddingEnabled;
 
     private final DocumentParser textParser = new TextDocumentParser();
     private final DocumentParser pdfParser = new ApachePdfBoxDocumentParser();
@@ -103,11 +112,15 @@ public class KnowledgeBaseService {
                                 @Qualifier("knowledgeIngestionExecutor") TaskExecutor knowledgeIngestionExecutor,
                                 KnowledgeProcessingNotifier knowledgeProcessingNotifier,
                                 KnowledgeFileStatusService knowledgeFileStatusService,
+                                KnowledgeChunkIndexService knowledgeChunkIndexService,
+                                ObjectMapper objectMapper,
                                 @Value("${app.knowledge-base.chunk-size:1000}") int defaultChunkSize,
                                 @Value("${app.knowledge-base.chunk-overlap:150}") int defaultChunkOverlap,
                                 @Value("${app.knowledge-base.max-chunk-size:4000}") int maxChunkSize,
                                 @Value("${app.knowledge-base.max-segments-per-document:1200}") int maxSegmentsPerDocument,
                                 @Value("${app.embedding.batch-size:24}") int embeddingBatchSize,
+                                @Value("${app.embedding.local-enabled:true}") boolean localEmbeddingEnabled,
+                                @Value("${app.embedding.online-enabled:false}") boolean onlineEmbeddingEnabled,
                                 @Value("${app.knowledge-base.storage-dir:data/knowledge-base}") String storageDir) {
         this.localEmbeddingStore = localEmbeddingStore;
         this.onlineEmbeddingStore = onlineEmbeddingStore;
@@ -117,11 +130,15 @@ public class KnowledgeBaseService {
         this.knowledgeIngestionExecutor = knowledgeIngestionExecutor;
         this.knowledgeProcessingNotifier = knowledgeProcessingNotifier;
         this.knowledgeFileStatusService = knowledgeFileStatusService;
+        this.knowledgeChunkIndexService = knowledgeChunkIndexService;
+        this.objectMapper = objectMapper;
         this.defaultChunkSize = Math.max(300, defaultChunkSize);
         this.defaultChunkOverlap = Math.max(0, defaultChunkOverlap);
         this.maxChunkSize = Math.max(this.defaultChunkSize, maxChunkSize);
         this.maxSegmentsPerDocument = Math.max(50, maxSegmentsPerDocument);
         this.embeddingBatchSize = Math.max(1, embeddingBatchSize);
+        this.localEmbeddingEnabled = localEmbeddingEnabled;
+        this.onlineEmbeddingEnabled = onlineEmbeddingEnabled;
         this.storageDirectory = Path.of(storageDir).toAbsolutePath().normalize();
     }
 
@@ -144,9 +161,10 @@ public class KnowledgeBaseService {
             }
             ingestedHashes.clear();
             knowledgeRecords.clear();
-            knowledgeFileStatusService.deleteAll();
         }
 
+        // 重启后优先从数据库恢复切片和向量，只有缺失向量时才补算，避免重复消耗在线 embedding。
+        Set<String> discoveredHashes = new HashSet<>();
         PathMatchingResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
         Resource[] resources = resolver.getResources("classpath:knowledge/*");
         for (Resource resource : resources) {
@@ -154,7 +172,9 @@ public class KnowledgeBaseService {
                 continue;
             }
             try {
-                ingestResource(resource);
+                String hash = hashForResource(resource);
+                discoveredHashes.add(hash);
+                ingestResource(resource, hash);
             } catch (BlankDocumentException e) {
                 log.warn("跳过空白知识资源: {}", resource.getFilename());
             } catch (Exception e) {
@@ -166,12 +186,17 @@ public class KnowledgeBaseService {
             List<Path> storedFiles = paths.filter(Files::isRegularFile).sorted().toList();
             for (Path storedFile : storedFiles) {
                 try {
-                    ingestStoredFile(storedFile, extractHashFromStoredFilename(storedFile.getFileName().toString()));
+                    String hash = extractHashFromStoredFilename(storedFile.getFileName().toString());
+                    if (StringUtils.hasText(hash)) {
+                        discoveredHashes.add(hash);
+                    }
+                    ingestStoredFile(storedFile, hash);
                 } catch (Exception e) {
                     log.warn("跳过无法解析的本地知识文件: {}", storedFile.getFileName(), e);
                 }
             }
         }
+        pruneStaleKnowledge(discoveredHashes);
     }
 
     public KnowledgeUploadResponse upload(MultipartFile[] files) {
@@ -251,6 +276,10 @@ public class KnowledgeBaseService {
             if (!storedFile.equals(record.storagePath())) {
                 Files.deleteIfExists(record.storagePath());
             }
+            knowledgeChunkIndexService.deleteByHash(hash);
+            knowledgeFileStatusService.deleteByHash(hash);
+            ingestedHashes.remove(hash);
+            knowledgeRecords.remove(hash);
             reloadKnowledgeBase();
             return getKnowledgeDetail(newHash);
         } finally {
@@ -270,6 +299,7 @@ public class KnowledgeBaseService {
             throw new IOException("当前知识文件缺少本地存储路径");
         }
         Files.deleteIfExists(record.storagePath());
+        removeKnowledgeRecord(hash);
         reloadKnowledgeBase();
     }
 
@@ -443,13 +473,14 @@ public class KnowledgeBaseService {
             item.setMessage("文件已上传，正在后台解析并构建 RAG 切分");
             response.setAccepted(response.getAccepted() + 1);
             log.info("knowledge.upload.queued hash={} file={} size={} extension={}", hash, originalFilename, size, extension);
+            // 上传接口只负责落盘和入队，解析、切分、embedding 全部在后台线程池完成。
             scheduleKnowledgeProcessing(hash, storedFilename, originalFilename, extension, size, storedFile);
         } finally {
             Files.deleteIfExists(tempFile);
         }
     }
 
-    private void ingestResource(Resource resource) throws IOException {
+    private void ingestResource(Resource resource, String hash) throws IOException {
         String filename = resource.getFilename();
         String extension = getExtension(filename);
         if (!SUPPORTED_EXTENSIONS.contains(extension)) {
@@ -464,8 +495,11 @@ public class KnowledgeBaseService {
             // 某些资源无法提前获取长度，继续走解析流程。
         }
 
-        String hash = hashForResource(resource);
         if (ingestedHashes.contains(hash)) {
+            return;
+        }
+
+        if (restorePersistedKnowledge(hash, null)) {
             return;
         }
 
@@ -499,6 +533,9 @@ public class KnowledgeBaseService {
             return;
         }
         String originalFilename = stripHashPrefix(storedFile.getFileName().toString());
+        if (restorePersistedKnowledge(hash, storedFile)) {
+            return;
+        }
         ParsedKnowledge parsedKnowledge = parseFile(storedFile, originalFilename, hash);
         log.info("knowledge.reload.parsed hash={} file={} parser={} chars={}", hash, originalFilename,
                 parsedKnowledge.parserName(), parsedKnowledge.document().text().length());
@@ -595,17 +632,27 @@ public class KnowledgeBaseService {
             segmentIds.add(hash + "-segment-" + (i + 1));
         }
 
+        int enabledEmbeddingStores = enabledEmbeddingStoreCount();
         int batchesPerStore = calculateBatchCount(segments.size());
-        int effectiveTotalBatches = Math.max(totalBatches, batchesPerStore * 2);
+        int effectiveTotalBatches = enabledEmbeddingStores == 0
+                ? 0
+                : Math.max(totalBatches, batchesPerStore * enabledEmbeddingStores);
 
+        List<Embedding> localEmbeddings = List.of();
+        List<Embedding> onlineEmbeddings = List.of();
         synchronized (embeddingStoreMonitor) {
-            List<dev.langchain4j.data.embedding.Embedding> localEmbeddings =
-                    embedSegmentsInBatches(hash, segments, 0, effectiveTotalBatches, "本地向量索引", localEmbeddingModel);
-            localEmbeddingStore.addAll(segmentIds, localEmbeddings, segments);
-            List<dev.langchain4j.data.embedding.Embedding> onlineEmbeddings =
-                    embedSegmentsInBatches(hash, segments, batchesPerStore, effectiveTotalBatches, "在线向量索引", onlineEmbeddingModel);
-            onlineEmbeddingStore.addAll(segmentIds, onlineEmbeddings, segments);
+            int batchOffset = 0;
+            if (localEmbeddingEnabled) {
+                localEmbeddings = embedSegmentsInBatches(hash, segments, batchOffset, effectiveTotalBatches, "本地向量索引", localEmbeddingModel);
+                localEmbeddingStore.addAll(segmentIds, localEmbeddings, segments);
+                batchOffset += batchesPerStore;
+            }
+            if (onlineEmbeddingEnabled) {
+                onlineEmbeddings = embedSegmentsInBatches(hash, segments, batchOffset, effectiveTotalBatches, "在线向量索引", onlineEmbeddingModel);
+                onlineEmbeddingStore.addAll(segmentIds, onlineEmbeddings, segments);
+            }
         }
+        knowledgeChunkIndexService.replaceAll(hash, buildChunkIndexes(hash, segments, localEmbeddings, onlineEmbeddings));
         KnowledgeDocumentRecord record = new KnowledgeDocumentRecord(
                 fileName,
                 originalFilename,
@@ -807,6 +854,7 @@ public class KnowledgeBaseService {
         if (removed != null) {
             ingestedHashes.remove(hash);
         }
+        knowledgeChunkIndexService.deleteByHash(hash);
         knowledgeFileStatusService.deleteByHash(hash);
     }
 
@@ -855,6 +903,102 @@ public class KnowledgeBaseService {
         }
     }
 
+    private void pruneStaleKnowledge(Set<String> discoveredHashes) {
+        for (KnowledgeFileStatus status : knowledgeFileStatusService.listAll()) {
+            if (status == null || !StringUtils.hasText(status.getHash())) {
+                continue;
+            }
+            if (discoveredHashes.contains(status.getHash())) {
+                continue;
+            }
+            knowledgeChunkIndexService.deleteByHash(status.getHash());
+            knowledgeFileStatusService.deleteByHash(status.getHash());
+        }
+    }
+
+    private boolean restorePersistedKnowledge(String hash, Path storagePath) {
+        KnowledgeFileStatus status = knowledgeFileStatusService.findByHash(hash);
+        List<KnowledgeChunkIndex> chunkIndexes = knowledgeChunkIndexService.listByHash(hash);
+        if (status == null || chunkIndexes.isEmpty()) {
+            return false;
+        }
+
+        List<TextSegment> segments = toSegments(chunkIndexes);
+        List<String> segmentIds = chunkIndexes.stream()
+                .map(KnowledgeChunkIndex::getSegmentId)
+                .toList();
+        boolean localMissing = localEmbeddingEnabled && hasMissingEmbedding(chunkIndexes, true);
+        boolean onlineMissing = onlineEmbeddingEnabled && hasMissingEmbedding(chunkIndexes, false);
+        // 只有在当前启用的向量提供方缺数据时才回补，避免每次启动都重新请求模型。
+        if (localMissing || onlineMissing) {
+            int batchOffset = 0;
+            int batchesPerStore = calculateBatchCount(segments.size());
+            int totalBatches = batchesPerStore * ((localMissing ? 1 : 0) + (onlineMissing ? 1 : 0));
+            if (localMissing) {
+                List<Embedding> localEmbeddings = embedSegmentsInBatches(hash, segments, batchOffset, totalBatches, "本地向量索引", localEmbeddingModel);
+                applyEmbeddings(chunkIndexes, localEmbeddings, true);
+                batchOffset += batchesPerStore;
+            }
+            if (onlineMissing) {
+                List<Embedding> onlineEmbeddings = embedSegmentsInBatches(hash, segments, batchOffset, totalBatches, "在线向量索引", onlineEmbeddingModel);
+                applyEmbeddings(chunkIndexes, onlineEmbeddings, false);
+            }
+            knowledgeChunkIndexService.replaceAll(hash, chunkIndexes);
+        }
+
+        synchronized (embeddingStoreMonitor) {
+            if (localEmbeddingEnabled) {
+                restoreEmbeddingsToStore(segmentIds, segments, chunkIndexes, true);
+            }
+            if (onlineEmbeddingEnabled) {
+                restoreEmbeddingsToStore(segmentIds, segments, chunkIndexes, false);
+            }
+        }
+
+        KnowledgeDocumentRecord record = new KnowledgeDocumentRecord(
+                status.getFileName(),
+                status.getOriginalFilename(),
+                status.getHash(),
+                status.getSource(),
+                status.getParser(),
+                status.getExtension(),
+                status.getSize() == null ? 0L : status.getSize(),
+                Boolean.TRUE.equals(status.getEditable()),
+                Boolean.TRUE.equals(status.getDeletable()),
+                status.getProcessingStatus(),
+                status.getStatusMessage(),
+                status.getProgressPercent() == null ? 0 : status.getProgressPercent(),
+                status.getCurrentBatch() == null ? 0 : status.getCurrentBatch(),
+                status.getTotalBatches() == null ? 0 : status.getTotalBatches(),
+                status.getExtractedText() == null ? "" : status.getExtractedText(),
+                toChunkInfos(chunkIndexes),
+                storagePath
+        );
+        ingestedHashes.add(hash);
+        knowledgeRecords.put(hash, record);
+        return true;
+    }
+
+    private boolean hasMissingEmbedding(List<KnowledgeChunkIndex> chunkIndexes, boolean localStore) {
+        for (KnowledgeChunkIndex chunkIndex : chunkIndexes) {
+            String serialized = localStore ? chunkIndex.getLocalEmbedding() : chunkIndex.getOnlineEmbedding();
+            if (!StringUtils.hasText(serialized)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void applyEmbeddings(List<KnowledgeChunkIndex> chunkIndexes, List<Embedding> embeddings, boolean localStore) {
+        for (int i = 0; i < chunkIndexes.size() && i < embeddings.size(); i++) {
+            if (localStore) {
+                chunkIndexes.get(i).setLocalEmbedding(serializeEmbedding(embeddings.get(i)));
+            } else {
+                chunkIndexes.get(i).setOnlineEmbedding(serializeEmbedding(embeddings.get(i)));
+            }
+        }
+    }
+
     private List<KnowledgeChunkInfo> buildChunkInfos(List<TextSegment> segments) {
         List<KnowledgeChunkInfo> chunks = new ArrayList<>(segments.size());
         for (int i = 0; i < segments.size(); i++) {
@@ -867,6 +1011,108 @@ public class KnowledgeBaseService {
             chunks.add(chunk);
         }
         return chunks;
+    }
+
+    private List<KnowledgeChunkInfo> toChunkInfos(List<KnowledgeChunkIndex> indexes) {
+        List<KnowledgeChunkInfo> chunks = new ArrayList<>(indexes.size());
+        for (KnowledgeChunkIndex index : indexes) {
+            KnowledgeChunkInfo chunk = new KnowledgeChunkInfo();
+            chunk.setIndex(index.getSegmentIndex() == null ? 0 : index.getSegmentIndex());
+            chunk.setContent(index.getContent());
+            chunk.setCharacterCount(index.getCharacterCount() == null ? 0 : index.getCharacterCount());
+            chunk.setPreview(index.getPreview());
+            chunks.add(chunk);
+        }
+        return chunks;
+    }
+
+    private List<KnowledgeChunkIndex> buildChunkIndexes(String hash,
+                                                        List<TextSegment> segments,
+                                                        List<Embedding> localEmbeddings,
+                                                        List<Embedding> onlineEmbeddings) {
+        List<KnowledgeChunkIndex> indexes = new ArrayList<>(segments.size());
+        for (int i = 0; i < segments.size(); i++) {
+            TextSegment segment = segments.get(i);
+            KnowledgeChunkIndex index = new KnowledgeChunkIndex();
+            index.setFileHash(hash);
+            index.setSegmentId(hash + "-segment-" + (i + 1));
+            index.setSegmentIndex(i + 1);
+            index.setContent(segment.text());
+            index.setPreview(buildPreview(segment.text()));
+            index.setCharacterCount(segment.text().length());
+            if (i < localEmbeddings.size()) {
+                index.setLocalEmbedding(serializeEmbedding(localEmbeddings.get(i)));
+            }
+            if (i < onlineEmbeddings.size()) {
+                index.setOnlineEmbedding(serializeEmbedding(onlineEmbeddings.get(i)));
+            }
+            indexes.add(index);
+        }
+        return indexes;
+    }
+
+    private List<TextSegment> toSegments(List<KnowledgeChunkIndex> chunkIndexes) {
+        List<TextSegment> segments = new ArrayList<>(chunkIndexes.size());
+        for (KnowledgeChunkIndex index : chunkIndexes) {
+            segments.add(TextSegment.from(index.getContent()));
+        }
+        return segments;
+    }
+
+    private void restoreEmbeddingsToStore(List<String> segmentIds,
+                                          List<TextSegment> segments,
+                                          List<KnowledgeChunkIndex> chunkIndexes,
+                                          boolean localStore) {
+        List<Embedding> embeddings = new ArrayList<>(chunkIndexes.size());
+        List<TextSegment> availableSegments = new ArrayList<>(chunkIndexes.size());
+        List<String> availableSegmentIds = new ArrayList<>(chunkIndexes.size());
+        for (int i = 0; i < chunkIndexes.size(); i++) {
+            String serialized = localStore ? chunkIndexes.get(i).getLocalEmbedding() : chunkIndexes.get(i).getOnlineEmbedding();
+            if (!StringUtils.hasText(serialized)) {
+                continue;
+            }
+            embeddings.add(deserializeEmbedding(serialized));
+            availableSegments.add(segments.get(i));
+            availableSegmentIds.add(segmentIds.get(i));
+        }
+        if (embeddings.isEmpty()) {
+            return;
+        }
+        if (localStore) {
+            localEmbeddingStore.addAll(availableSegmentIds, embeddings, availableSegments);
+        } else {
+            onlineEmbeddingStore.addAll(availableSegmentIds, embeddings, availableSegments);
+        }
+    }
+
+    private String serializeEmbedding(Embedding embedding) {
+        if (embedding == null) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(embedding.vectorAsList());
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("序列化 embedding 失败", e);
+        }
+    }
+
+    private Embedding deserializeEmbedding(String serialized) {
+        try {
+            return Embedding.from(objectMapper.readValue(serialized, float[].class));
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("反序列化 embedding 失败", e);
+        }
+    }
+
+    private int enabledEmbeddingStoreCount() {
+        int count = 0;
+        if (localEmbeddingEnabled) {
+            count++;
+        }
+        if (onlineEmbeddingEnabled) {
+            count++;
+        }
+        return count;
     }
 
     private String buildPreview(String text) {
@@ -951,6 +1197,7 @@ public class KnowledgeBaseService {
         int chunkSize = defaultChunkSize;
         int chunkOverlap = Math.min(defaultChunkOverlap, Math.max(0, chunkSize / 3));
         List<TextSegment> segments = createSplitter(chunkSize, chunkOverlap).split(document);
+        // 对超大文档逐步放大 chunk，优先把切片数量控制在可接受范围内，避免 embedding 爆量。
         while (segments.size() > maxSegmentsPerDocument && chunkSize < maxChunkSize) {
             int nextChunkSize = Math.min(maxChunkSize, chunkSize * 2);
             if (nextChunkSize == chunkSize) {
@@ -975,6 +1222,7 @@ public class KnowledgeBaseService {
                                                                                   EmbeddingModel embeddingModel) {
         List<dev.langchain4j.data.embedding.Embedding> embeddings = new ArrayList<>(segments.size());
         int stageBatchCount = calculateBatchCount(segments.size());
+        // 分批 embedding 是为了限制单次请求体积，并让前端能看到真实批次进度。
         for (int batchIndex = 0; batchIndex < stageBatchCount; batchIndex++) {
             int start = batchIndex * embeddingBatchSize;
             int end = Math.min(start + embeddingBatchSize, segments.size());
@@ -1048,6 +1296,7 @@ public class KnowledgeBaseService {
         status.setProgressPercent(record.progressPercent());
         status.setCurrentBatch(record.currentBatch());
         status.setTotalBatches(record.totalBatches());
+        status.setExtractedText(record.extractedText());
         status.setExtractedCharacters(record.extractedText() == null ? 0 : record.extractedText().length());
         status.setChunkCount(record.chunks() == null ? 0 : record.chunks().size());
         knowledgeFileStatusService.saveOrUpdate(status);
@@ -1134,8 +1383,8 @@ public class KnowledgeBaseService {
         detail.setProgressPercent(status.getProgressPercent());
         detail.setCurrentBatch(status.getCurrentBatch());
         detail.setTotalBatches(status.getTotalBatches());
-        detail.setExtractedText("");
-        detail.setChunks(List.of());
+        detail.setExtractedText(status.getExtractedText() == null ? "" : status.getExtractedText());
+        detail.setChunks(toChunkInfos(knowledgeChunkIndexService.listByHash(status.getHash())));
         return detail;
     }
 

@@ -24,6 +24,7 @@ public class KnowledgeFileStatus {
     private Integer progressPercent;
     private Integer currentBatch;
     private Integer totalBatches;
+    private String extractedText;
     private Integer extractedCharacters;
     private Integer chunkCount;
     private LocalDateTime createdAt;
@@ -147,6 +148,14 @@ public class KnowledgeFileStatus {
 
     public void setTotalBatches(Integer totalBatches) {
         this.totalBatches = totalBatches;
+    }
+
+    public String getExtractedText() {
+        return extractedText;
+    }
+
+    public void setExtractedText(String extractedText) {
+        this.extractedText = extractedText;
     }
 
     public Integer getExtractedCharacters() {

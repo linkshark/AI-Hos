@@ -1,0 +1,104 @@
+server:
+  port: ${SERVER_PORT:8080}
+  address: ${SERVER_ADDRESS:0.0.0.0}
+
+app:
+  provider:
+    default: ${APP_PROVIDER_DEFAULT:LOCAL_OLLAMA}
+    local-enabled: ${APP_PROVIDER_LOCAL_ENABLED:true}
+    online-enabled: ${APP_PROVIDER_ONLINE_ENABLED:true}
+  embedding:
+    local-enabled: ${APP_EMBEDDING_LOCAL_ENABLED:true}
+    online-enabled: ${APP_EMBEDDING_ONLINE_ENABLED:false}
+    base-url: ${EMBEDDING_BASE_URL:http://localhost:11434}
+    model-name: ${EMBEDDING_MODEL_NAME:bge-m3:latest}
+    timeout: ${EMBEDDING_TIMEOUT:PT90S}
+    max-attempts: ${EMBEDDING_MAX_ATTEMPTS:3}
+    retry-delay: ${EMBEDDING_RETRY_DELAY:PT2S}
+    batch-size: ${EMBEDDING_BATCH_SIZE:24}
+    log-requests: ${EMBEDDING_LOG_REQUESTS:false}
+    log-responses: ${EMBEDDING_LOG_RESPONSES:false}
+  local-chat:
+    base-url: ${LOCAL_CHAT_BASE_URL:http://localhost:11434}
+    model-name: ${LOCAL_CHAT_MODEL_NAME:qwen2.5:3b}
+    temperature: ${LOCAL_CHAT_TEMPERATURE:0.3}
+    num-predict: ${LOCAL_CHAT_NUM_PREDICT:384}
+    num-ctx: ${LOCAL_CHAT_NUM_CTX:4096}
+    timeout: ${LOCAL_CHAT_TIMEOUT:PT90S}
+    log-requests: ${LOCAL_CHAT_LOG_REQUESTS:false}
+    log-responses: ${LOCAL_CHAT_LOG_RESPONSES:false}
+  online-embedding:
+    base-url: ${ONLINE_EMBEDDING_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+    api-key: ${ONLINE_EMBEDDING_API_KEY:${BL_KEY}}
+    model-name: ${ONLINE_EMBEDDING_MODEL_NAME:text-embedding-v4}
+    timeout: ${ONLINE_EMBEDDING_TIMEOUT:PT90S}
+    log-requests: ${ONLINE_EMBEDDING_LOG_REQUESTS:false}
+    log-responses: ${ONLINE_EMBEDDING_LOG_RESPONSES:false}
+  vision-chat:
+    base-url: ${VISION_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+    api-key: ${VISION_API_KEY:${BL_KEY}}
+    model-name: ${VISION_MODEL_NAME:qwen3.5-plus}
+    timeout: ${VISION_TIMEOUT:PT90S}
+  local-vision:
+    base-url: ${LOCAL_VISION_BASE_URL:http://localhost:11434}
+    model-name: ${LOCAL_VISION_MODEL_NAME:qwen2.5vl:7b}
+    temperature: ${LOCAL_VISION_TEMPERATURE:0.2}
+    num-ctx: ${LOCAL_VISION_NUM_CTX:8192}
+    timeout: ${LOCAL_VISION_TIMEOUT:PT180S}
+    log-requests: ${LOCAL_VISION_LOG_REQUESTS:false}
+    log-responses: ${LOCAL_VISION_LOG_RESPONSES:false}
+  knowledge-base:
+    storage-dir: ${KNOWLEDGE_BASE_STORAGE_DIR:data/knowledge-base}
+    bootstrap-enabled: ${KNOWLEDGE_BASE_BOOTSTRAP_ENABLED:true}
+    chunk-size: ${KNOWLEDGE_CHUNK_SIZE:1000}
+    chunk-overlap: ${KNOWLEDGE_CHUNK_OVERLAP:150}
+    max-chunk-size: ${KNOWLEDGE_MAX_CHUNK_SIZE:4000}
+    max-segments-per-document: ${KNOWLEDGE_MAX_SEGMENTS_PER_DOCUMENT:1200}
+    async:
+      core-pool-size: ${KNOWLEDGE_ASYNC_CORE_POOL_SIZE:1}
+      max-pool-size: ${KNOWLEDGE_ASYNC_MAX_POOL_SIZE:1}
+      queue-capacity: ${KNOWLEDGE_ASYNC_QUEUE_CAPACITY:32}
+
+langchain4j:
+  open-ai:
+    chat-model:
+      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      api-key: ${BL_KEY}
+      model-name: ${ONLINE_CHAT_MODEL_NAME:qwen3.5-plus}
+      temperature: 0.9
+      log-requests: true
+      log-responses: true
+  community:
+    dashscope:
+      chat-model:
+        api-key: ${BL_KEY}
+        model-name: ${ONLINE_CHAT_MODEL_NAME:qwen3.5-plus}
+      streaming-chat-model:
+        api-key: ${BL_KEY}
+        model-name: ${ONLINE_CHAT_MODEL_NAME:qwen3.5-plus}
+
+spring:
+  data:
+    mongodb:
+      uri: ${SPRING_DATA_MONGODB_URI:mongodb://localhost:27017/chat_memory_db}
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3306/aimed?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 100MB
+
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    map-underscore-to-camel-case: true
+
+logging:
+  level:
+    root: info
+    com.linkjb.aimed: info
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} [trace=%X{traceId:-}] - %msg%n"

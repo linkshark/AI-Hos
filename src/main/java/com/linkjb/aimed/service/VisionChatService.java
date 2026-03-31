@@ -11,6 +11,7 @@ import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,6 +27,7 @@ import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 
 @Service
 public class VisionChatService {
@@ -38,16 +40,25 @@ public class VisionChatService {
     private final KnowledgeBaseService knowledgeBaseService;
     private final MongoChatMemoryStore mongoChatMemoryStore;
     private final Resource promptTemplateResource;
+    private final boolean localProviderEnabled;
+    private final boolean onlineProviderEnabled;
+    private final String defaultProvider;
 
     public VisionChatService(@Qualifier("qwenVisionChatModel") ChatModel onlineVisionChatModel,
                              @Qualifier("localVisionChatModel") ChatModel localVisionChatModel,
                              KnowledgeBaseService knowledgeBaseService,
                              MongoChatMemoryStore mongoChatMemoryStore,
+                             @Value("${app.provider.local-enabled:true}") boolean localProviderEnabled,
+                             @Value("${app.provider.online-enabled:true}") boolean onlineProviderEnabled,
+                             @Value("${app.provider.default:LOCAL_OLLAMA}") String defaultProvider,
                              @org.springframework.beans.factory.annotation.Value("classpath:prompt-templates/aimed-prompt-template.txt") Resource promptTemplateResource) {
         this.onlineVisionChatModel = onlineVisionChatModel;
         this.localVisionChatModel = localVisionChatModel;
         this.knowledgeBaseService = knowledgeBaseService;
         this.mongoChatMemoryStore = mongoChatMemoryStore;
+        this.localProviderEnabled = localProviderEnabled;
+        this.onlineProviderEnabled = onlineProviderEnabled;
+        this.defaultProvider = defaultProvider;
         this.promptTemplateResource = promptTemplateResource;
     }
 
@@ -92,10 +103,32 @@ public class VisionChatService {
     }
 
     private ChatModel selectVisionChatModel(String provider) {
-        if (LOCAL_OLLAMA.equals(provider)) {
+        String resolvedProvider = resolveProvider(provider);
+        if (LOCAL_OLLAMA.equals(resolvedProvider)) {
             return localVisionChatModel;
         }
         return onlineVisionChatModel;
+    }
+
+    private String resolveProvider(String provider) {
+        String requested = StringUtils.hasText(provider)
+                ? provider.trim().toUpperCase(Locale.ROOT)
+                : defaultProvider.trim().toUpperCase(Locale.ROOT);
+        if (LOCAL_OLLAMA.equals(requested)) {
+            if (localProviderEnabled) {
+                return LOCAL_OLLAMA;
+            }
+            if (onlineProviderEnabled) {
+                return QWEN_ONLINE;
+            }
+        }
+        if (onlineProviderEnabled) {
+            return QWEN_ONLINE;
+        }
+        if (localProviderEnabled) {
+            return LOCAL_OLLAMA;
+        }
+        throw new IllegalStateException("未启用任何可用的图片分析模型提供方，请检查 app.provider.* 配置");
     }
 
     private String errorMessage(String provider) {
@@ -107,6 +140,7 @@ public class VisionChatService {
 
     private String buildTextPrompt(String message, MultipartFile[] files) throws IOException {
         String effectiveMessage = StringUtils.hasText(message) ? message : "请结合我上传的图片或材料进行分析并回答。";
+        // 文档类附件先转成文本上下文，再与图片一起送入多模态模型。
         String attachmentContext = knowledgeBaseService.buildChatAttachmentTextContext(files);
 
         StringBuilder builder = new StringBuilder();
@@ -156,6 +190,7 @@ public class VisionChatService {
         history.add(UserMessage.from(userSummary));
         history.add(AiMessage.from(answer));
 
+        // 视觉会话只保留最近窗口，避免 Mongo 记忆无限增长并拖慢后续问答。
         if (history.size() > 20) {
             ChatMessage first = history.get(0);
             List<ChatMessage> trimmed = new LinkedList<>();

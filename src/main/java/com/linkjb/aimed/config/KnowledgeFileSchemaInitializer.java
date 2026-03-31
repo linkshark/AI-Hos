@@ -32,6 +32,7 @@ public class KnowledgeFileSchemaInitializer {
                   progress_percent INT NOT NULL DEFAULT 0,
                   current_batch INT NOT NULL DEFAULT 0,
                   total_batches INT NOT NULL DEFAULT 0,
+                  extracted_text LONGTEXT DEFAULT NULL,
                   extracted_characters INT NOT NULL DEFAULT 0,
                   chunk_count INT NOT NULL DEFAULT 0,
                   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -42,9 +43,28 @@ public class KnowledgeFileSchemaInitializer {
                   KEY idx_knowledge_file_status (processing_status)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """);
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_chunk_index (
+                  id BIGINT NOT NULL AUTO_INCREMENT,
+                  file_hash VARCHAR(64) NOT NULL,
+                  segment_id VARCHAR(96) NOT NULL,
+                  segment_index INT NOT NULL,
+                  content MEDIUMTEXT NOT NULL,
+                  preview VARCHAR(255) DEFAULT NULL,
+                  character_count INT NOT NULL DEFAULT 0,
+                  local_embedding MEDIUMTEXT DEFAULT NULL,
+                  online_embedding MEDIUMTEXT DEFAULT NULL,
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  PRIMARY KEY (id),
+                  UNIQUE KEY uk_knowledge_chunk_segment_id (segment_id),
+                  KEY idx_knowledge_chunk_file_hash (file_hash)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """);
         addColumnIfMissing("progress_percent", "ALTER TABLE knowledge_file_status ADD COLUMN progress_percent INT NOT NULL DEFAULT 0");
         addColumnIfMissing("current_batch", "ALTER TABLE knowledge_file_status ADD COLUMN current_batch INT NOT NULL DEFAULT 0");
         addColumnIfMissing("total_batches", "ALTER TABLE knowledge_file_status ADD COLUMN total_batches INT NOT NULL DEFAULT 0");
+        addColumnIfMissing("extracted_text", "ALTER TABLE knowledge_file_status ADD COLUMN extracted_text LONGTEXT DEFAULT NULL");
     }
 
     private void addColumnIfMissing(String columnName, String ddl) {

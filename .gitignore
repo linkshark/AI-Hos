@@ -35,7 +35,9 @@ build/
 .DS_Store
 
 ### Local runtime config ###
+.env
 .env.local
 .env.prod
+.env.online
 src/main/resources/application-local.properties
 data/

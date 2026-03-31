@@ -20,7 +20,7 @@
 - doc
 - knowledge
 - mapper
-- application.properties
+- application.yml
 - prompt-templates
 
 ### test

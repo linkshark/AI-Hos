@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS `knowledge_file_status` (
   `progress_percent` INT NOT NULL DEFAULT 0 COMMENT '处理进度百分比',
   `current_batch` INT NOT NULL DEFAULT 0 COMMENT '当前批次',
   `total_batches` INT NOT NULL DEFAULT 0 COMMENT '总批次',
+  `extracted_text` LONGTEXT DEFAULT NULL COMMENT '提取后的全文文本',
   `extracted_characters` INT NOT NULL DEFAULT 0 COMMENT '提取文本长度',
   `chunk_count` INT NOT NULL DEFAULT 0 COMMENT 'RAG 切分数量',
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -43,3 +44,20 @@ CREATE TABLE IF NOT EXISTS `knowledge_file_status` (
   KEY `idx_knowledge_file_source` (`source`),
   KEY `idx_knowledge_file_status` (`processing_status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库文件状态表';
+
+CREATE TABLE IF NOT EXISTS `knowledge_chunk_index` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `file_hash` VARCHAR(64) NOT NULL COMMENT '所属文件哈希',
+  `segment_id` VARCHAR(96) NOT NULL COMMENT '切片唯一ID',
+  `segment_index` INT NOT NULL COMMENT '切片序号',
+  `content` MEDIUMTEXT NOT NULL COMMENT '切片全文',
+  `preview` VARCHAR(255) DEFAULT NULL COMMENT '切片预览',
+  `character_count` INT NOT NULL DEFAULT 0 COMMENT '切片字符数',
+  `local_embedding` MEDIUMTEXT DEFAULT NULL COMMENT '本地 embedding 向量(JSON)',
+  `online_embedding` MEDIUMTEXT DEFAULT NULL COMMENT '在线 embedding 向量(JSON)',
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_knowledge_chunk_segment_id` (`segment_id`),
+  KEY `idx_knowledge_chunk_file_hash` (`file_hash`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库切片及向量表';

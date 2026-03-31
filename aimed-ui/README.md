@@ -2,7 +2,7 @@
 
 ## 1 前言
 
-[AiMed](https://github.com/digitzh/AiMed) 的UI界面，采用Node.js + Vue 3 + Vite构建。
+[AiMed]([https://github.com/digitzh/AiMed](https://github.com/linkshark/AI-Hos)) 的UI界面，采用Node.js + Vue 3 + Vite构建。
 
 ## 2 使用方法
 

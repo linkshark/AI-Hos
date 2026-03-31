@@ -6,7 +6,7 @@
 
 项目包含前端子模块AiMed-UI，需加`--recursive`参数一并克隆：
 ```shell
-git clone git@github.com:digitzh/AiMed.git --recursive
+git clone <https://github.com/linkshark/AI-Hos> --recursive
 ```
 
 ### 1.2 运行服务端
@@ -34,9 +34,8 @@ git clone git@github.com:digitzh/AiMed.git --recursive
 
 #### 1.3.2 通过UI页面发送消息
 
-在aimed-ui目录下运行UI（前后端分离，请参考前端仓库[AiMed-UI](https://github.com/digitzh/aimed-ui)）：
+在`aimed-ui`目录下运行 UI：
 ```shell
 npm run dev
 ```
 之后即可在(http://localhost:5173/)使用。
-

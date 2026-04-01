@@ -18,6 +18,7 @@ import java.util.UUID;
 public class RedisAuthStateService {
 
     private static final String REGISTER_PURPOSE = "register";
+    private static final String RESET_PASSWORD_PURPOSE = "reset-password";
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
     private final AuthProperties authProperties;
@@ -36,6 +37,22 @@ public class RedisAuthStateService {
 
     public boolean consumeRegisterCode(String email, String code) {
         String key = verificationCodeKey(email, REGISTER_PURPOSE);
+        String cached = redisTemplate.opsForValue().get(key);
+        if (!StringUtils.hasText(cached) || !cached.equalsIgnoreCase(code == null ? "" : code.trim())) {
+            return false;
+        }
+        redisTemplate.delete(key);
+        return true;
+    }
+
+    public String storePasswordResetCode(String email, String code) {
+        String key = verificationCodeKey(email, RESET_PASSWORD_PURPOSE);
+        redisTemplate.opsForValue().set(key, code, authProperties.getVerificationExpires());
+        return key;
+    }
+
+    public boolean consumePasswordResetCode(String email, String code) {
+        String key = verificationCodeKey(email, RESET_PASSWORD_PURPOSE);
         String cached = redisTemplate.opsForValue().get(key);
         if (!StringUtils.hasText(cached) || !cached.equalsIgnoreCase(code == null ? "" : code.trim())) {
             return false;

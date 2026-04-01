@@ -47,7 +47,14 @@ public class SecurityConfig {
                         // endpoint authorization on those internal dispatches.
                         .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
                         .requestMatchers("/error", "/doc.html", "/favicon.ico", "/webjars/**", "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html", "/actuator/health").permitAll()
-                        .requestMatchers("/aimed/auth/login", "/aimed/auth/register", "/aimed/auth/register/send-code", "/aimed/auth/refresh").permitAll()
+                        .requestMatchers(
+                                "/aimed/auth/login",
+                                "/aimed/auth/register",
+                                "/aimed/auth/register/send-code",
+                                "/aimed/auth/password/send-code",
+                                "/aimed/auth/password/reset",
+                                "/aimed/auth/refresh"
+                        ).permitAll()
                         .requestMatchers("/aimed/auth/me", "/aimed/auth/logout").authenticated()
                         .requestMatchers("/ws/knowledge").permitAll()
                         .requestMatchers("/aimed/knowledge/**").hasRole("ADMIN")

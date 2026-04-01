@@ -3,6 +3,7 @@ package com.linkjb.aimed.controller;
 import com.linkjb.aimed.bean.ChatForm;
 import com.linkjb.aimed.bean.ChatProviderConfigResponse;
 import com.linkjb.aimed.security.AuthenticatedUser;
+import com.linkjb.aimed.service.ChatSessionUserBindingService;
 import com.linkjb.aimed.service.ChatApplicationService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -28,9 +29,12 @@ public class ChatController {
     private static final Logger log = LoggerFactory.getLogger(ChatController.class);
 
     private final ChatApplicationService chatApplicationService;
+    private final ChatSessionUserBindingService chatSessionUserBindingService;
 
-    public ChatController(ChatApplicationService chatApplicationService) {
+    public ChatController(ChatApplicationService chatApplicationService,
+                          ChatSessionUserBindingService chatSessionUserBindingService) {
         this.chatApplicationService = chatApplicationService;
+        this.chatSessionUserBindingService = chatSessionUserBindingService;
     }
 
     @Operation(summary = "聊天模型入口配置")
@@ -45,6 +49,9 @@ public class ChatController {
                              @AuthenticationPrincipal AuthenticatedUser currentUser) {
         log.info("chat.controller.request type=json memoryId={} provider={} userId={}",
                 chatForm.getMemoryId(), chatForm.getModelProvider(), currentUser == null ? null : currentUser.userId());
+        if (currentUser != null) {
+            chatSessionUserBindingService.bind(chatForm.getMemoryId(), currentUser.userId());
+        }
         return chatApplicationService.chat(chatForm.getMemoryId(), chatForm.getMessage(), chatForm.getModelProvider());
     }
 
@@ -57,6 +64,9 @@ public class ChatController {
                                       @AuthenticationPrincipal AuthenticatedUser currentUser) {
         log.info("chat.controller.request type=multipart memoryId={} provider={} attachments={} userId={}",
                 memoryId, modelProvider, files == null ? 0 : files.length, currentUser == null ? null : currentUser.userId());
+        if (currentUser != null) {
+            chatSessionUserBindingService.bind(memoryId, currentUser.userId());
+        }
         return chatApplicationService.chatWithFiles(memoryId, message, modelProvider, files);
     }
 }

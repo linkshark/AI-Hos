@@ -17,6 +17,6 @@ import static dev.langchain4j.service.spring.AiServiceWiringMode.EXPLICIT;
 )
 public interface LocalStreamingAiMedAgent {
 
-    @SystemMessage(fromResource = "prompt-templates/aimed-prompt-template.txt")
+    @SystemMessage(fromResource = "prompt-templates/aimed-prompt-template-local.txt")
     TokenStream chat(@MemoryId Long memoryId, @UserMessage String userMessage);
 }

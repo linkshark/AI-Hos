@@ -20,7 +20,6 @@ public class MailSenderService {
     private final String mailFrom;
     private final String mailUsername;
     private final String mailPassword;
-
     public MailSenderService(JavaMailSender javaMailSender,
                              AuthProperties authProperties,
                              @Value("${spring.mail.username:}") String mailUsername,
@@ -34,8 +33,33 @@ public class MailSenderService {
     }
 
     public void sendRegisterCode(String to, String code) {
+        sendVerificationMail(
+                to,
+                "杭州树兰医院智能服务平台注册验证码",
+                "您好，您的注册验证码为：" + code + "。\n\n验证码将在 10 分钟后失效，请勿泄露给他人。"
+        );
+    }
+
+    public void sendAppointSuccess(String email,String message) {
+        log.info("appointment.mail.send to={}", email);
+        sendVerificationMail(
+                email,
+                "杭州树兰医院智能服务平台预约成功通知",
+                "您好，您的预约信息已确认：" + "\n\n"+message
+        );
+    }
+
+    public void sendPasswordResetCode(String to, String code) {
+        sendVerificationMail(
+                to,
+                "杭州树兰医院智能服务平台密码重置验证码",
+                "您好，您的密码重置验证码为：" + code + "。\n\n验证码将在 10 分钟后失效。如非本人操作，请忽略本邮件。"
+        );
+    }
+
+    private void sendVerificationMail(String to, String subject, String text) {
         if (authProperties.isMailMockEnabled()) {
-            log.info("auth.mail.mock to={} code={}", to, code);
+            log.info("auth.mail.mock to={} subject={}", to, subject);
             return;
         }
         if (!StringUtils.hasText(mailUsername) || !StringUtils.hasText(mailPassword)) {
@@ -44,8 +68,8 @@ public class MailSenderService {
         SimpleMailMessage message = new SimpleMailMessage();
         message.setTo(to);
         message.setFrom(StringUtils.hasText(mailFrom) ? mailFrom : mailUsername);
-        message.setSubject("杭州树兰医院智能工作台注册验证码");
-        message.setText("您好，您的注册验证码为：" + code + "。\n\n验证码将在 10 分钟后失效，请勿泄露给他人。");
+        message.setSubject(subject);
+        message.setText(text);
         try {
             javaMailSender.send(message);
         } catch (MailException exception) {

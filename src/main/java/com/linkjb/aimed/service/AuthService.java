@@ -3,6 +3,8 @@ package com.linkjb.aimed.service;
 import com.linkjb.aimed.bean.AuthUserResponse;
 import com.linkjb.aimed.bean.LoginRequest;
 import com.linkjb.aimed.bean.MessageResponse;
+import com.linkjb.aimed.bean.PasswordResetRequest;
+import com.linkjb.aimed.bean.PasswordResetSendCodeRequest;
 import com.linkjb.aimed.bean.RefreshTokenRequest;
 import com.linkjb.aimed.bean.RegisterRequest;
 import com.linkjb.aimed.bean.RegisterSendCodeRequest;
@@ -55,6 +57,18 @@ public class AuthService {
         return new MessageResponse("验证码已发送，请查收邮箱");
     }
 
+    public MessageResponse sendPasswordResetCode(PasswordResetSendCodeRequest request) {
+        String email = appUserService.normalizeEmail(request.email());
+        if (!appUserService.existsByEmail(email)) {
+            throw new IllegalStateException("该邮箱未注册");
+        }
+        String code = generateCode();
+        redisAuthStateService.storePasswordResetCode(email, code);
+        mailSenderService.sendPasswordResetCode(email, code);
+        log.info("auth.password-reset.code.sent email={}", email);
+        return new MessageResponse("验证码已发送，请查收邮箱");
+    }
+
     public TokenPairResponse register(RegisterRequest request) {
         String email = appUserService.normalizeEmail(request.email());
         validatePasswordConfirmation(request.password(), request.confirmPassword());
@@ -96,6 +110,21 @@ public class AuthService {
         // Refresh 时轮换 refresh token，避免长期复用同一令牌。
         redisAuthStateService.revokeRefreshToken(request.refreshToken());
         return issueTokenPair(user);
+    }
+
+    public MessageResponse resetPassword(PasswordResetRequest request) {
+        String email = appUserService.normalizeEmail(request.email());
+        validatePasswordConfirmation(request.password(), request.confirmPassword());
+        AppUser user = appUserService.findByEmail(email);
+        if (user == null) {
+            throw new IllegalStateException("该邮箱未注册");
+        }
+        if (!redisAuthStateService.consumePasswordResetCode(email, request.code())) {
+            throw new IllegalArgumentException("验证码错误或已过期");
+        }
+        appUserService.updatePassword(user.getId(), passwordEncoder.encode(request.password()));
+        log.info("auth.password-reset.success userId={} email={}", user.getId(), email);
+        return new MessageResponse("密码已重置，请使用新密码登录");
     }
 
     public MessageResponse logout(String accessToken, String refreshToken) {

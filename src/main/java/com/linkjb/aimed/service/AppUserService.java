@@ -90,6 +90,17 @@ public class AppUserService {
         appUserMapper.updateById(user);
     }
 
+    public void updatePassword(Long userId, String passwordHash) {
+        if (userId == null || !StringUtils.hasText(passwordHash)) {
+            return;
+        }
+        AppUser user = new AppUser();
+        user.setId(userId);
+        user.setPasswordHash(passwordHash);
+        user.setUpdatedAt(LocalDateTime.now());
+        appUserMapper.updateById(user);
+    }
+
     public String normalizeEmail(String email) {
         return email == null ? null : email.trim().toLowerCase();
     }

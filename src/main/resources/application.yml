@@ -1,4 +1,7 @@
 spring:
+  output:
+    ansi:
+      enabled: always
   config:
     # 线上配置先加载，本地私有配置后加载；当两者同时存在时，本地覆盖线上。
     import:
@@ -80,9 +83,17 @@ app:
     timeout: ${LOCAL_CHAT_TIMEOUT:PT90S}
     log-requests: ${LOCAL_CHAT_LOG_REQUESTS:false}
     log-responses: ${LOCAL_CHAT_LOG_RESPONSES:false}
+  online-chat:
+    base-url: ${ONLINE_CHAT_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+    api-key: ${ONLINE_CHAT_API_KEY:${BL_KEY:}}
+    model-name: ${ONLINE_CHAT_MODEL_NAME:qwen3.5-plus}
+    temperature: ${ONLINE_CHAT_TEMPERATURE:0.9}
+    timeout: ${ONLINE_CHAT_TIMEOUT:PT90S}
+    log-requests: ${ONLINE_CHAT_LOG_REQUESTS:true}
+    log-responses: ${ONLINE_CHAT_LOG_RESPONSES:true}
   online-embedding:
     base-url: ${ONLINE_EMBEDDING_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
-    api-key: ${ONLINE_EMBEDDING_API_KEY:${BL_KEY}}
+    api-key: ${ONLINE_EMBEDDING_API_KEY:${BL_KEY:}}
     model-name: ${ONLINE_EMBEDDING_MODEL_NAME:text-embedding-v4}
     timeout: ${ONLINE_EMBEDDING_TIMEOUT:PT90S}
     batch-size: ${ONLINE_EMBEDDING_BATCH_SIZE:10}
@@ -90,7 +101,7 @@ app:
     log-responses: ${ONLINE_EMBEDDING_LOG_RESPONSES:false}
   vision-chat:
     base-url: ${VISION_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
-    api-key: ${VISION_API_KEY:${BL_KEY}}
+    api-key: ${VISION_API_KEY:${BL_KEY:}}
     model-name: ${VISION_MODEL_NAME:qwen3.5-plus}
     timeout: ${VISION_TIMEOUT:PT90S}
   local-vision:
@@ -113,24 +124,6 @@ app:
       max-pool-size: ${KNOWLEDGE_ASYNC_MAX_POOL_SIZE:1}
       queue-capacity: ${KNOWLEDGE_ASYNC_QUEUE_CAPACITY:32}
 
-langchain4j:
-  open-ai:
-    chat-model:
-      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
-      api-key: ${BL_KEY}
-      model-name: ${ONLINE_CHAT_MODEL_NAME:qwen3.5-plus}
-      temperature: 0.9
-      log-requests: true
-      log-responses: true
-  community:
-    dashscope:
-      chat-model:
-        api-key: ${BL_KEY}
-        model-name: ${ONLINE_CHAT_MODEL_NAME:qwen3.5-plus}
-      streaming-chat-model:
-        api-key: ${BL_KEY}
-        model-name: ${ONLINE_CHAT_MODEL_NAME:qwen3.5-plus}
-
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
@@ -139,5 +132,3 @@ logging:
   level:
     root: info
     com.linkjb.aimed: info
-  pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} [trace=%X{traceId:-}] - %msg%n"

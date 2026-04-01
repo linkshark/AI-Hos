@@ -10,7 +10,7 @@ import static dev.langchain4j.service.spring.AiServiceWiringMode.EXPLICIT;
 
 @AiService(
         wiringMode = EXPLICIT,
-        streamingChatModel = "qwenStreamingChatModel",
+        streamingChatModel = "onlineStreamingChatModel",
         chatMemoryProvider = "chatMemoryProviderAiMed",
         tools = "appointmentTools",
         contentRetriever = "contentRetrieverOnline"

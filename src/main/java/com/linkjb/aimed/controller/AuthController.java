@@ -4,6 +4,8 @@ import com.linkjb.aimed.bean.AuthUserResponse;
 import com.linkjb.aimed.bean.LoginRequest;
 import com.linkjb.aimed.bean.LogoutRequest;
 import com.linkjb.aimed.bean.MessageResponse;
+import com.linkjb.aimed.bean.PasswordResetRequest;
+import com.linkjb.aimed.bean.PasswordResetSendCodeRequest;
 import com.linkjb.aimed.bean.RefreshTokenRequest;
 import com.linkjb.aimed.bean.RegisterRequest;
 import com.linkjb.aimed.bean.RegisterSendCodeRequest;
@@ -40,6 +42,12 @@ public class AuthController {
         return authService.sendRegisterCode(request);
     }
 
+    @Operation(summary = "发送密码重置邮箱验证码")
+    @PostMapping("/password/send-code")
+    public MessageResponse sendPasswordResetCode(@Valid @RequestBody PasswordResetSendCodeRequest request) {
+        return authService.sendPasswordResetCode(request);
+    }
+
     @Operation(summary = "注册并登录")
     @PostMapping("/register")
     public TokenPairResponse register(@Valid @RequestBody RegisterRequest request) {
@@ -56,6 +64,12 @@ public class AuthController {
     @PostMapping("/refresh")
     public TokenPairResponse refresh(@Valid @RequestBody RefreshTokenRequest request) {
         return authService.refresh(request);
+    }
+
+    @Operation(summary = "邮箱验证码重置密码")
+    @PostMapping("/password/reset")
+    public MessageResponse resetPassword(@Valid @RequestBody PasswordResetRequest request) {
+        return authService.resetPassword(request);
     }
 
     @Operation(summary = "退出登录")

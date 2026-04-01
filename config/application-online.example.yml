@@ -1,19 +1,10 @@
 app:
+  online-chat:
+    api-key: change-me
   online-embedding:
     api-key: change-me
   vision-chat:
     api-key: change-me
-
-langchain4j:
-  open-ai:
-    chat-model:
-      api-key: change-me
-  community:
-    dashscope:
-      chat-model:
-        api-key: change-me
-      streaming-chat-model:
-        api-key: change-me
 
 spring:
   datasource:
@@ -33,4 +24,3 @@ spring:
     port: 465
     username: change-me@qq.com
     password: change-me
-

@@ -13,7 +13,7 @@ public class VisionChatModelConfig {
     @Bean(name = "qwenVisionChatModel")
     OpenAiChatModel qwenVisionChatModel(
             @Value("${app.vision-chat.base-url:https://dashscope.aliyuncs.com/compatible-mode/v1}") String baseUrl,
-            @Value("${app.vision-chat.api-key:${BL_KEY}}") String apiKey,
+            @Value("${app.vision-chat.api-key:}") String apiKey,
             @Value("${app.vision-chat.model-name:qwen3.5-plus}") String modelName,
             @Value("${app.vision-chat.timeout:PT90S}") Duration timeout) {
         return OpenAiChatModel.builder()

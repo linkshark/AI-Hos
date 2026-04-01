@@ -18,6 +18,24 @@ CREATE TABLE IF NOT EXISTS `appointment` (
   UNIQUE KEY `uk_appointment_unique_slot` (`username`, `id_card`, `department`, `date`, `time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='预约挂号表';
 
+CREATE TABLE IF NOT EXISTS `app_user` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `username` VARCHAR(64) NOT NULL COMMENT '登录用户名',
+  `email` VARCHAR(255) NOT NULL COMMENT '登录邮箱',
+  `password_hash` VARCHAR(255) NOT NULL COMMENT 'BCrypt 密码摘要',
+  `nickname` VARCHAR(128) DEFAULT NULL COMMENT '昵称',
+  `role` VARCHAR(32) NOT NULL DEFAULT 'USER' COMMENT '角色 USER/ADMIN',
+  `status` VARCHAR(32) NOT NULL DEFAULT 'ACTIVE' COMMENT '状态 ACTIVE/DISABLED',
+  `last_login_at` DATETIME DEFAULT NULL COMMENT '最近登录时间',
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_app_user_username` (`username`),
+  UNIQUE KEY `uk_app_user_email` (`email`),
+  KEY `idx_app_user_role` (`role`),
+  KEY `idx_app_user_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='系统用户表';
+
 CREATE TABLE IF NOT EXISTS `knowledge_file_status` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `hash` VARCHAR(64) NOT NULL COMMENT '文件内容哈希',

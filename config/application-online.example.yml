@@ -1,0 +1,36 @@
+app:
+  online-embedding:
+    api-key: change-me
+  vision-chat:
+    api-key: change-me
+
+langchain4j:
+  open-ai:
+    chat-model:
+      api-key: change-me
+  community:
+    dashscope:
+      chat-model:
+        api-key: change-me
+      streaming-chat-model:
+        api-key: change-me
+
+spring:
+  datasource:
+    url: jdbc:mysql://host.docker.internal:13306/aimed?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: change-me
+    password: change-me
+  data:
+    mongodb:
+      uri: mongodb://change-me:change-me@host.docker.internal:27018/chat_memory_db?authSource=admin
+    redis:
+      host: host.docker.internal
+      port: 6379
+      username: default
+      password: change-me
+  mail:
+    host: smtp.qq.com
+    port: 465
+    username: change-me@qq.com
+    password: change-me
+

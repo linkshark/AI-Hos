@@ -5,6 +5,8 @@ import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.Set;
@@ -12,6 +14,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 public class KnowledgeWebSocketHandler extends TextWebSocketHandler {
+    private static final Logger log = LoggerFactory.getLogger(KnowledgeWebSocketHandler.class);
 
     private final Set<WebSocketSession> sessions = ConcurrentHashMap.newKeySet();
 
@@ -34,7 +37,7 @@ public class KnowledgeWebSocketHandler extends TextWebSocketHandler {
     }
 
     public void broadcast(String payload) {
-        System.out.println("broadcast: " + payload);
+        log.info("knowledge.websocket.broadcast sessions={}", sessions.size());
         TextMessage message = new TextMessage(payload);
         for (WebSocketSession session : sessions) {
             if (!session.isOpen()) {

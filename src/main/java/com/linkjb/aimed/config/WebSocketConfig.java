@@ -11,14 +11,18 @@ import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry
 public class WebSocketConfig implements WebSocketConfigurer {
 
     private final KnowledgeWebSocketHandler knowledgeWebSocketHandler;
+    private final KnowledgeWebSocketAuthInterceptor knowledgeWebSocketAuthInterceptor;
 
-    public WebSocketConfig(KnowledgeWebSocketHandler knowledgeWebSocketHandler) {
+    public WebSocketConfig(KnowledgeWebSocketHandler knowledgeWebSocketHandler,
+                           KnowledgeWebSocketAuthInterceptor knowledgeWebSocketAuthInterceptor) {
         this.knowledgeWebSocketHandler = knowledgeWebSocketHandler;
+        this.knowledgeWebSocketAuthInterceptor = knowledgeWebSocketAuthInterceptor;
     }
 
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
         registry.addHandler(knowledgeWebSocketHandler, "/ws/knowledge")
+                .addInterceptors(knowledgeWebSocketAuthInterceptor)
                 .setAllowedOriginPatterns("*");
     }
 }

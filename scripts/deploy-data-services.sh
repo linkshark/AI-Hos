@@ -1,29 +1,53 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 独立数据容器优先读取当前目录下的 .env/.env.online，避免重建后与应用配置脱节。
-if [[ -f ".env.online" ]]; then
-  set -a
-  source .env.online
-  set +a
-elif [[ -f ".env" ]]; then
-  set -a
-  source .env
-  set +a
+CONFIG_FILE="${DATA_CONFIG_FILE:-./config/application-online.yml}"
+
+yaml_value_in_block() {
+  local file="$1"
+  local block_indent="$2"
+  local block_name="$3"
+  local key_indent="$4"
+  local key_name="$5"
+  awk -v block_indent="$block_indent" -v block_name="$block_name" -v key_indent="$key_indent" -v key_name="$key_name" '
+    $0 ~ ("^" block_indent block_name ":") {in_block=1; next}
+    in_block && $0 ~ ("^" key_indent key_name ":") {
+      sub("^" key_indent key_name ": ", "", $0)
+      print $0
+      exit
+    }
+    in_block && $0 ~ "^[^[:space:]]" {in_block=0}
+  ' "$file"
+}
+
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  echo "missing data config yaml: $CONFIG_FILE" >&2
+  exit 1
 fi
 
-MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-CHANGE_ME_DB_PASSWORD}"
-MYSQL_DATABASE="${MYSQL_DATABASE:-aimed}"
-MYSQL_APP_USERNAME="${MYSQL_APP_USERNAME:-shark}"
-MYSQL_APP_PASSWORD="${MYSQL_APP_PASSWORD:-CHANGE_ME_DB_PASSWORD}"
-MYSQL_HOST_PORT="${MYSQL_HOST_PORT:-13306}"
+MYSQL_URL="$(yaml_value_in_block "$CONFIG_FILE" '  ' 'datasource' '    ' 'url')"
+MYSQL_APP_USERNAME="$(yaml_value_in_block "$CONFIG_FILE" '  ' 'datasource' '    ' 'username')"
+MYSQL_APP_PASSWORD="$(yaml_value_in_block "$CONFIG_FILE" '  ' 'datasource' '    ' 'password')"
+MONGO_URI="$(yaml_value_in_block "$CONFIG_FILE" '    ' 'mongodb' '      ' 'uri')"
+REDIS_USERNAME="$(yaml_value_in_block "$CONFIG_FILE" '    ' 'redis' '      ' 'username')"
+REDIS_HOST_PORT="$(yaml_value_in_block "$CONFIG_FILE" '    ' 'redis' '      ' 'port')"
+REDIS_PASSWORD="$(yaml_value_in_block "$CONFIG_FILE" '    ' 'redis' '      ' 'password')"
+
+MYSQL_DATABASE="${MYSQL_URL#*//*/}"
+MYSQL_DATABASE="${MYSQL_DATABASE%%\?*}"
+MYSQL_HOST_PORT="${MYSQL_URL#*://*:}"
+MYSQL_HOST_PORT="${MYSQL_HOST_PORT%%/*}"
+MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-$MYSQL_APP_PASSWORD}"
 TZ_NAME="${TZ_NAME:-Asia/Shanghai}"
 
-MONGO_ROOT_USERNAME="${MONGO_ROOT_USERNAME:-shark}"
-MONGO_ROOT_PASSWORD="${MONGO_ROOT_PASSWORD:-CHANGE_ME_DB_PASSWORD}"
-MONGO_HOST_PORT="${MONGO_HOST_PORT:-27018}"
+MONGO_AUTH="${MONGO_URI#mongodb://}"
+MONGO_AUTH="${MONGO_AUTH%%@*}"
+MONGO_ROOT_USERNAME="${MONGO_AUTH%%:*}"
+MONGO_ROOT_PASSWORD="${MONGO_AUTH#*:}"
+MONGO_HOST_PORT="${MONGO_URI#*@*:}"
+MONGO_HOST_PORT="${MONGO_HOST_PORT%%/*}"
 
-docker rm -f aimed-mariadb aimed-mongo >/dev/null 2>&1 || true
+docker rm -f aimed-mariadb aimed-mongo aimed-redis >/dev/null 2>&1 || true
 
 docker run -d \
   --name aimed-mariadb \
@@ -54,5 +78,17 @@ docker run -d \
   -v /etc/timezone:/etc/timezone:ro \
   mongo:4.4
 
+docker run -d \
+  --name aimed-redis \
+  --restart unless-stopped \
+  -p "${REDIS_HOST_PORT}:6379" \
+  -e TZ="${TZ_NAME}" \
+  -v ai-hos_aimed-online-redis-data:/data \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /etc/timezone:/etc/timezone:ro \
+  redis:7-alpine \
+  redis-server --appendonly yes --requirepass "${REDIS_PASSWORD}"
+
 echo "started aimed-mariadb on ${MYSQL_HOST_PORT}"
 echo "started aimed-mongo on ${MONGO_HOST_PORT}"
+echo "started aimed-redis on ${REDIS_HOST_PORT}"

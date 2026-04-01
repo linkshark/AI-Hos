@@ -1,7 +1,12 @@
 package com.linkjb.aimed.bean;
 
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+
 public class ChatForm {
+    @NotNull(message = "会话标识不能为空")
     private Long memoryId;//对话id
+    @NotBlank(message = "消息内容不能为空")
     private String message;//用户问题
     private String modelProvider;//模型提供方
 

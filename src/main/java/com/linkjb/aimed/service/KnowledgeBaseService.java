@@ -97,6 +97,7 @@ public class KnowledgeBaseService {
     private final int maxChunkSize;
     private final int maxSegmentsPerDocument;
     private final int embeddingBatchSize;
+    private final int onlineEmbeddingBatchSize;
     private final boolean localEmbeddingEnabled;
     private final boolean onlineEmbeddingEnabled;
 
@@ -119,6 +120,7 @@ public class KnowledgeBaseService {
                                 @Value("${app.knowledge-base.max-chunk-size:4000}") int maxChunkSize,
                                 @Value("${app.knowledge-base.max-segments-per-document:1200}") int maxSegmentsPerDocument,
                                 @Value("${app.embedding.batch-size:24}") int embeddingBatchSize,
+                                @Value("${app.online-embedding.batch-size:10}") int onlineEmbeddingBatchSize,
                                 @Value("${app.embedding.local-enabled:true}") boolean localEmbeddingEnabled,
                                 @Value("${app.embedding.online-enabled:false}") boolean onlineEmbeddingEnabled,
                                 @Value("${app.knowledge-base.storage-dir:data/knowledge-base}") String storageDir) {
@@ -137,6 +139,7 @@ public class KnowledgeBaseService {
         this.maxChunkSize = Math.max(this.defaultChunkSize, maxChunkSize);
         this.maxSegmentsPerDocument = Math.max(50, maxSegmentsPerDocument);
         this.embeddingBatchSize = Math.max(1, embeddingBatchSize);
+        this.onlineEmbeddingBatchSize = Math.max(1, onlineEmbeddingBatchSize);
         this.localEmbeddingEnabled = localEmbeddingEnabled;
         this.onlineEmbeddingEnabled = onlineEmbeddingEnabled;
         this.storageDirectory = Path.of(storageDir).toAbsolutePath().normalize();
@@ -632,11 +635,9 @@ public class KnowledgeBaseService {
             segmentIds.add(hash + "-segment-" + (i + 1));
         }
 
-        int enabledEmbeddingStores = enabledEmbeddingStoreCount();
-        int batchesPerStore = calculateBatchCount(segments.size());
-        int effectiveTotalBatches = enabledEmbeddingStores == 0
-                ? 0
-                : Math.max(totalBatches, batchesPerStore * enabledEmbeddingStores);
+        int localBatchCount = localEmbeddingEnabled ? calculateBatchCount(segments.size(), resolveBatchSize(localEmbeddingModel)) : 0;
+        int onlineBatchCount = onlineEmbeddingEnabled ? calculateBatchCount(segments.size(), resolveBatchSize(onlineEmbeddingModel)) : 0;
+        int effectiveTotalBatches = Math.max(totalBatches, localBatchCount + onlineBatchCount);
 
         List<Embedding> localEmbeddings = List.of();
         List<Embedding> onlineEmbeddings = List.of();
@@ -645,7 +646,7 @@ public class KnowledgeBaseService {
             if (localEmbeddingEnabled) {
                 localEmbeddings = embedSegmentsInBatches(hash, segments, batchOffset, effectiveTotalBatches, "本地向量索引", localEmbeddingModel);
                 localEmbeddingStore.addAll(segmentIds, localEmbeddings, segments);
-                batchOffset += batchesPerStore;
+                batchOffset += localBatchCount;
             }
             if (onlineEmbeddingEnabled) {
                 onlineEmbeddings = embedSegmentsInBatches(hash, segments, batchOffset, effectiveTotalBatches, "在线向量索引", onlineEmbeddingModel);
@@ -932,12 +933,17 @@ public class KnowledgeBaseService {
         // 只有在当前启用的向量提供方缺数据时才回补，避免每次启动都重新请求模型。
         if (localMissing || onlineMissing) {
             int batchOffset = 0;
-            int batchesPerStore = calculateBatchCount(segments.size());
-            int totalBatches = batchesPerStore * ((localMissing ? 1 : 0) + (onlineMissing ? 1 : 0));
+            int totalBatches = 0;
+            if (localMissing) {
+                totalBatches += calculateBatchCount(segments.size(), resolveBatchSize(localEmbeddingModel));
+            }
+            if (onlineMissing) {
+                totalBatches += calculateBatchCount(segments.size(), resolveBatchSize(onlineEmbeddingModel));
+            }
             if (localMissing) {
                 List<Embedding> localEmbeddings = embedSegmentsInBatches(hash, segments, batchOffset, totalBatches, "本地向量索引", localEmbeddingModel);
                 applyEmbeddings(chunkIndexes, localEmbeddings, true);
-                batchOffset += batchesPerStore;
+                batchOffset += calculateBatchCount(segments.size(), resolveBatchSize(localEmbeddingModel));
             }
             if (onlineMissing) {
                 List<Embedding> onlineEmbeddings = embedSegmentsInBatches(hash, segments, batchOffset, totalBatches, "在线向量索引", onlineEmbeddingModel);
@@ -1104,17 +1110,6 @@ public class KnowledgeBaseService {
         }
     }
 
-    private int enabledEmbeddingStoreCount() {
-        int count = 0;
-        if (localEmbeddingEnabled) {
-            count++;
-        }
-        if (onlineEmbeddingEnabled) {
-            count++;
-        }
-        return count;
-    }
-
     private String buildPreview(String text) {
         if (!StringUtils.hasText(text)) {
             return "";
@@ -1221,11 +1216,12 @@ public class KnowledgeBaseService {
                                                                                   String stageLabel,
                                                                                   EmbeddingModel embeddingModel) {
         List<dev.langchain4j.data.embedding.Embedding> embeddings = new ArrayList<>(segments.size());
-        int stageBatchCount = calculateBatchCount(segments.size());
+        int batchSize = resolveBatchSize(embeddingModel);
+        int stageBatchCount = calculateBatchCount(segments.size(), batchSize);
         // 分批 embedding 是为了限制单次请求体积，并让前端能看到真实批次进度。
         for (int batchIndex = 0; batchIndex < stageBatchCount; batchIndex++) {
-            int start = batchIndex * embeddingBatchSize;
-            int end = Math.min(start + embeddingBatchSize, segments.size());
+            int start = batchIndex * batchSize;
+            int end = Math.min(start + batchSize, segments.size());
             List<TextSegment> batch = List.copyOf(segments.subList(start, end));
             int visibleBatchIndex = batchOffset + batchIndex + 1;
             int progressPercent = buildProgressPercent(visibleBatchIndex, totalBatches);
@@ -1243,8 +1239,20 @@ public class KnowledgeBaseService {
         return embeddings;
     }
 
+    private int resolveBatchSize(EmbeddingModel embeddingModel) {
+        if (embeddingModel == onlineEmbeddingModel) {
+            return onlineEmbeddingBatchSize;
+        }
+        return embeddingBatchSize;
+    }
+
     private int calculateBatchCount(int segmentCount) {
-        return Math.max(1, (segmentCount + embeddingBatchSize - 1) / embeddingBatchSize);
+        return calculateBatchCount(segmentCount, embeddingBatchSize);
+    }
+
+    private int calculateBatchCount(int segmentCount, int batchSize) {
+        int effectiveBatchSize = Math.max(1, batchSize);
+        return Math.max(1, (segmentCount + effectiveBatchSize - 1) / effectiveBatchSize);
     }
 
     private String buildEmbeddingProgressMessage(int segmentCount, int currentBatch, int totalBatches, String stageLabel) {

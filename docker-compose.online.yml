@@ -7,28 +7,9 @@ services:
     restart: unless-stopped
     environment:
       TZ: Asia/Shanghai
-      BL_KEY: ${BL_KEY}
-      VISION_API_KEY: ${VISION_API_KEY:-${BL_KEY}}
-      SERVER_PORT: 8080
-      SERVER_ADDRESS: 0.0.0.0
-      SPRING_DATASOURCE_URL: jdbc:mysql://host.docker.internal:${MYSQL_HOST_PORT:-13306}/${MYSQL_DATABASE:-aimed}?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
-      MYSQL_USERNAME: ${MYSQL_APP_USERNAME:-shark}
-      MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD}
-      SPRING_DATA_MONGODB_URI: mongodb://${MONGO_ROOT_USERNAME:-shark}:${MONGO_ROOT_PASSWORD}@host.docker.internal:${MONGO_HOST_PORT:-27018}/chat_memory_db?authSource=admin
-      KNOWLEDGE_BASE_STORAGE_DIR: /app/data/knowledge-base
-      KNOWLEDGE_BASE_BOOTSTRAP_ENABLED: ${KNOWLEDGE_BASE_BOOTSTRAP_ENABLED:-true}
-      APP_PROVIDER_DEFAULT: ${APP_PROVIDER_DEFAULT:-QWEN_ONLINE}
-      APP_PROVIDER_LOCAL_ENABLED: ${APP_PROVIDER_LOCAL_ENABLED:-false}
-      APP_PROVIDER_ONLINE_ENABLED: ${APP_PROVIDER_ONLINE_ENABLED:-true}
-      APP_EMBEDDING_LOCAL_ENABLED: ${APP_EMBEDDING_LOCAL_ENABLED:-false}
-      APP_EMBEDDING_ONLINE_ENABLED: ${APP_EMBEDDING_ONLINE_ENABLED:-true}
-      ONLINE_CHAT_MODEL_NAME: ${ONLINE_CHAT_MODEL_NAME:-qwen3.5-plus}
-      ONLINE_EMBEDDING_MODEL_NAME: ${ONLINE_EMBEDDING_MODEL_NAME:-text-embedding-v4}
-      ONLINE_EMBEDDING_TIMEOUT: ${ONLINE_EMBEDDING_TIMEOUT:-PT120S}
-      VISION_MODEL_NAME: ${VISION_MODEL_NAME:-qwen3.5-plus}
-      VISION_TIMEOUT: ${VISION_TIMEOUT:-PT120S}
     volumes:
       - aimed-online-knowledge-data:/app/data/knowledge-base
+      - ./config:/app/config:ro
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
     extra_hosts:
@@ -45,7 +26,7 @@ services:
     environment:
       TZ: Asia/Shanghai
     ports:
-      - "${FRONTEND_PORT:-80}:80"
+      - "80:80"
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro

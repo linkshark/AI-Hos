@@ -9,15 +9,26 @@
 - Node.js 20+
 - Docker Desktop
 - 本地 MySQL 已启动
-- 本地 Redis 已启动
-
-当前代码没有实际使用 Redis，所以 Redis 不是后端启动阻塞项。
+- 本地 Redis 已启动，或通过 Docker 启动
 
 ## 2. 本地依赖配置
 
 ### 2.1 MySQL
 
-项目默认读取以下环境变量：
+推荐先复制 [application-local.example.yml](/Users/shenchaoqi/codex/AiMed/config/application-local.example.yml) 为 [application-local.yml](/Users/shenchaoqi/codex/AiMed/config/application-local.yml)。  
+项目启动时会自动按顺序读取：
+
+- 基础配置 [application.yml](/Users/shenchaoqi/codex/AiMed/src/main/resources/application.yml)
+- 线上私有配置 [application-online.yml](/Users/shenchaoqi/codex/AiMed/config/application-online.yml)
+- 本地私有配置 [application-local.yml](/Users/shenchaoqi/codex/AiMed/config/application-local.yml)
+
+如果本地和线上两份都存在，本地配置优先覆盖。当前本地私有 YAML 已按“本地应用直连家里服务器数据服务”准备，外网端口为：
+
+- MariaDB: `33306`
+- MongoDB: `37018`
+- Redis: `36379`
+
+如果你想继续手动 export，也仍然可以，但默认推荐直接写进本地私有 YAML：
 
 ```bash
 export SPRING_DATASOURCE_URL='jdbc:mysql://localhost:3306/aimed?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true'
@@ -34,16 +45,24 @@ mysql -h 127.0.0.1 -P 3306 -u root -p < sql/init_aimed.sql
 
 ### 2.2 MongoDB
 
-使用 Docker 启动本地 MongoDB：
+使用 Docker 启动本地 MongoDB 和 Redis：
 
 ```bash
-docker compose up -d mongodb
+docker compose up -d mongodb redis
 ```
 
 默认连接串：
 
 ```bash
 export SPRING_DATA_MONGODB_URI='mongodb://localhost:27017/chat_memory_db'
+```
+
+Redis 默认连接：
+
+```bash
+export SPRING_DATA_REDIS_HOST='127.0.0.1'
+export SPRING_DATA_REDIS_PORT='6379'
+export SPRING_DATA_REDIS_PASSWORD='你的Redis密码'
 ```
 
 ### 2.3 千问在线
@@ -53,6 +72,22 @@ export SPRING_DATA_MONGODB_URI='mongodb://localhost:27017/chat_memory_db'
 ```bash
 export BL_KEY='你的百炼 API Key'
 ```
+
+登录注册新增了 JWT 和邮件验证码能力，开发环境建议同时补这组变量：
+
+```bash
+export JWT_SECRET='请替换为一串足够长的随机字符串'
+export JWT_ACCESS_EXPIRES='PT30M'
+export JWT_REFRESH_EXPIRES='P14D'
+export MAIL_MOCK_ENABLED='true'
+export MAIL_HOST='smtp.qq.com'
+export MAIL_PORT='465'
+export MAIL_USERNAME='你的QQ邮箱'
+export MAIL_PASSWORD='你的QQ邮箱授权码'
+export MAIL_FROM='你的QQ邮箱'
+```
+
+当前更推荐直接把这组配置写到 [application-local.yml](/Users/shenchaoqi/codex/AiMed/config/application-local.yml)，这样本地启动不再依赖 shell 环境。
 
 ### 2.4 本地 Ollama Embedding
 
@@ -132,6 +167,13 @@ mvn spring-boot:run
 
 - Knife4j: [http://localhost:8080/doc.html](http://localhost:8080/doc.html)
 - 接口: `POST /aimed/chat`
+- 认证:
+  - `POST /aimed/auth/register/send-code`
+  - `POST /aimed/auth/register`
+  - `POST /aimed/auth/login`
+  - `POST /aimed/auth/refresh`
+  - `POST /aimed/auth/logout`
+  - `GET /aimed/auth/me`
 
 如果你希望一次性带齐本地离线相关环境变量，可以使用：
 
@@ -140,8 +182,12 @@ export SPRING_DATASOURCE_URL='jdbc:mysql://localhost:3306/aimed?useUnicode=true&
 export SPRING_DATASOURCE_USERNAME='root'
 export SPRING_DATASOURCE_PASSWORD='你的MySQL密码'
 export SPRING_DATA_MONGODB_URI='mongodb://localhost:27017/chat_memory_db'
+export SPRING_DATA_REDIS_HOST='127.0.0.1'
+export SPRING_DATA_REDIS_PORT='6379'
+export SPRING_DATA_REDIS_PASSWORD='你的Redis密码'
 export SERVER_ADDRESS='0.0.0.0'
 export BL_KEY='你的百炼 API Key'
+export JWT_SECRET='请替换为一串足够长的随机字符串'
 export EMBEDDING_BASE_URL='http://localhost:11434'
 export EMBEDDING_MODEL_NAME='bge-m3:latest'
 export LOCAL_CHAT_BASE_URL='http://localhost:11434'
@@ -250,11 +296,12 @@ mysql -h 127.0.0.1 -P 3306 -u root -p -D aimed -e 'select * from appointment;'
 - 运行中可通过 `POST /aimed/knowledge/upload` 动态上传知识文件，支持 `pdf/doc/docx/md/txt/csv/rtf/html/xml/odt/ods/odp/xls/xlsx/ppt/pptx`
 - 运行中上传的知识文件会保存到 `data/knowledge-base`，重启后会自动重新加载
 - 上传接口在文件保存完成后会立即返回 `QUEUED`，后续解析、RAG 切分、向量化由后台线程池异步完成
-- 知识库管理页会通过 WebSocket `ws://<host>:8080/ws/knowledge` 接收 `READY` / `FAILED` 通知，并自动刷新详情与切分结果
+- 知识库管理页会通过带 access token 的 WebSocket `ws://<host>/ws/knowledge?access_token=...` 接收 `READY` / `FAILED` 通知，并自动刷新详情与切分结果
 - 知识库文件状态会同步写入 MySQL 表 `knowledge_file_status`，即使应用重启也能保留当前处理状态和基础元数据
 - 向量数据仅驻留内存，重启后会重新加载
+- Redis 负责邮箱验证码、refresh token、access token 黑名单
 - Mongo 负责持久化聊天记忆
-- MySQL 负责预约挂号数据
+- MySQL 负责用户数据、预约挂号数据、知识库元数据
 - 图片附件不会写入知识库，只参与当前这轮对话分析
 
 ### 6.1 上传知识文件

@@ -28,10 +28,8 @@ cd /home/shark/AI-Hos
 默认配置：
 
 - MariaDB 用户名：`shark`
-- MariaDB 密码：请在服务器 `.env.online` 中自行设置
 - MariaDB 对外端口：`13306`
 - Mongo 用户名：`shark`
-- Mongo 密码：请在服务器 `.env.online` 中自行设置
 - Mongo 对外端口：`27018`
 
 这两个容器是长期运行的基础设施，不需要每次部署项目都重建。
@@ -49,20 +47,15 @@ cd /home/shark/AI-Hos
 - MariaDB `13306`
 - MongoDB `27018`
 
-## 3. 服务器机密环境文件
+## 3. 私有 YAML 配置
 
-百炼 API Key 不再依赖本机 `.env`，而是由服务器自己的机密环境文件提供：
+现在不再依赖 `.env` / `.env.online`。项目启动时会自动读取：
 
-- 路径：`/home/shark/.config/ai-hos/env`
+- 基础配置 [application.yml](/Users/shenchaoqi/codex/AiMed/src/main/resources/application.yml)
+- 本地 gitignore 私有文件 [application-local.yml](/Users/shenchaoqi/codex/AiMed/config/application-local.yml)
+- 线上 gitignore 私有文件 [application-online.yml](/Users/shenchaoqi/codex/AiMed/config/application-online.yml)
 
-内容示例：
-
-```bash
-BL_KEY=你的百炼_API_Key
-VISION_API_KEY=你的百炼_API_Key
-```
-
-远程部署脚本会在服务器上先 `source /home/shark/.config/ai-hos/env`，再执行 `docker compose up -d --build`。
+远程部署脚本会把本地 [application-online.yml](/Users/shenchaoqi/codex/AiMed/config/application-online.yml) 上传到服务器 `config/` 目录，然后再执行 `docker compose up -d --build`。
 
 ## 4. IDEA 里的运行方式
 
@@ -71,14 +64,8 @@ VISION_API_KEY=你的百炼_API_Key
 你每次点击它时，预期动作应该是：
 
 - 先把项目同步到服务器 `/home/shark/AI-Hos`
-- 上传普通配置 `.env.online`
-- 在服务器上读取 `/home/shark/.config/ai-hos/env`
+- 上传私有配置 `config/application-online.yml`
 - 只构建并运行 `backend` / `frontend`
-
-前提是：
-
-- 服务器 SSH 可连
-- 服务器上已经存在 `/home/shark/.config/ai-hos/env`
 
 ## 5. 服务器上的数据服务环境
 
@@ -86,10 +73,8 @@ VISION_API_KEY=你的百炼_API_Key
 
 - MariaDB 端口：`13306`
 - MariaDB 用户名：`shark`
-- MariaDB 密码：以服务器 `.env.online` 为准
 - MongoDB 端口：`27018`
 - MongoDB 用户名：`shark`
-- MongoDB 密码：以服务器 `.env.online` 为准
 - 四个容器统一时区：`Asia/Shanghai`
 
 ## 6. 访问和对外转发端口

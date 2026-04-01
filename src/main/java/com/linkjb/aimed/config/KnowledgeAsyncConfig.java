@@ -10,9 +10,9 @@ public class KnowledgeAsyncConfig {
 
     @Bean(name = "knowledgeIngestionExecutor")
     public ThreadPoolTaskExecutor knowledgeIngestionExecutor(
-            @Value("${app.knowledge-base.async.core-pool-size:1}") int corePoolSize,
-            @Value("${app.knowledge-base.async.max-pool-size:1}") int maxPoolSize,
-            @Value("${app.knowledge-base.async.queue-capacity:32}") int queueCapacity) {
+            @Value("${app.knowledge-base.async.core-pool-size:2}") int corePoolSize,
+            @Value("${app.knowledge-base.async.max-pool-size:4}") int maxPoolSize,
+            @Value("${app.knowledge-base.async.queue-capacity:64}") int queueCapacity) {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setThreadNamePrefix("knowledge-ingestion-");
         executor.setCorePoolSize(corePoolSize);

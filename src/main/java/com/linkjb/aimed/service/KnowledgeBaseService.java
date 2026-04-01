@@ -50,6 +50,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.stream.Stream;
@@ -167,38 +168,44 @@ public class KnowledgeBaseService {
         }
 
         // 重启后优先从数据库恢复切片和向量，只有缺失向量时才补算，避免重复消耗在线 embedding。
-        Set<String> discoveredHashes = new HashSet<>();
+        Set<String> discoveredHashes = ConcurrentHashMap.newKeySet();
         PathMatchingResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
         Resource[] resources = resolver.getResources("classpath:knowledge/*");
+        List<CompletableFuture<Void>> tasks = new ArrayList<>();
         for (Resource resource : resources) {
             if (!resource.exists() || resource.getFilename() == null) {
                 continue;
             }
-            try {
-                String hash = hashForResource(resource);
-                discoveredHashes.add(hash);
-                ingestResource(resource, hash);
-            } catch (BlankDocumentException e) {
-                log.warn("跳过空白知识资源: {}", resource.getFilename());
-            } catch (Exception e) {
-                log.warn("跳过无法加载的内置知识资源: {}", resource.getFilename(), e);
-            }
+            tasks.add(CompletableFuture.runAsync(() -> {
+                try {
+                    String hash = hashForResource(resource);
+                    discoveredHashes.add(hash);
+                    ingestResource(resource, hash);
+                } catch (BlankDocumentException e) {
+                    log.warn("跳过空白知识资源: {}", resource.getFilename());
+                } catch (Exception e) {
+                    log.warn("跳过无法加载的内置知识资源: {}", resource.getFilename(), e);
+                }
+            }, knowledgeIngestionExecutor));
         }
 
         try (Stream<Path> paths = Files.list(storageDirectory)) {
             List<Path> storedFiles = paths.filter(Files::isRegularFile).sorted().toList();
             for (Path storedFile : storedFiles) {
-                try {
-                    String hash = extractHashFromStoredFilename(storedFile.getFileName().toString());
-                    if (StringUtils.hasText(hash)) {
-                        discoveredHashes.add(hash);
+                tasks.add(CompletableFuture.runAsync(() -> {
+                    try {
+                        String hash = extractHashFromStoredFilename(storedFile.getFileName().toString());
+                        if (StringUtils.hasText(hash)) {
+                            discoveredHashes.add(hash);
+                        }
+                        ingestStoredFile(storedFile, hash);
+                    } catch (Exception e) {
+                        log.warn("跳过无法解析的本地知识文件: {}", storedFile.getFileName(), e);
                     }
-                    ingestStoredFile(storedFile, hash);
-                } catch (Exception e) {
-                    log.warn("跳过无法解析的本地知识文件: {}", storedFile.getFileName(), e);
-                }
+                }, knowledgeIngestionExecutor));
             }
         }
+        CompletableFuture.allOf(tasks.toArray(CompletableFuture[]::new)).join();
         pruneStaleKnowledge(discoveredHashes);
     }
 
@@ -641,20 +648,8 @@ public class KnowledgeBaseService {
 
         List<Embedding> localEmbeddings = List.of();
         List<Embedding> onlineEmbeddings = List.of();
-        synchronized (embeddingStoreMonitor) {
-            int batchOffset = 0;
-            if (localEmbeddingEnabled) {
-                localEmbeddings = embedSegmentsInBatches(hash, segments, batchOffset, effectiveTotalBatches, "本地向量索引", localEmbeddingModel);
-                localEmbeddingStore.addAll(segmentIds, localEmbeddings, segments);
-                batchOffset += localBatchCount;
-            }
-            if (onlineEmbeddingEnabled) {
-                onlineEmbeddings = embedSegmentsInBatches(hash, segments, batchOffset, effectiveTotalBatches, "在线向量索引", onlineEmbeddingModel);
-                onlineEmbeddingStore.addAll(segmentIds, onlineEmbeddings, segments);
-            }
-        }
-        knowledgeChunkIndexService.replaceAll(hash, buildChunkIndexes(hash, segments, localEmbeddings, onlineEmbeddings));
-        KnowledgeDocumentRecord record = new KnowledgeDocumentRecord(
+        List<KnowledgeChunkIndex> chunkIndexes = buildChunkIndexes(hash, segments, List.of(), List.of());
+        KnowledgeDocumentRecord initialRecord = new KnowledgeDocumentRecord(
                 fileName,
                 originalFilename,
                 hash,
@@ -674,6 +669,44 @@ public class KnowledgeBaseService {
                 storagePath
         );
         ingestedHashes.add(hash);
+        knowledgeRecords.put(hash, initialRecord);
+        saveKnowledgeStatus(initialRecord);
+        knowledgeChunkIndexService.replaceAll(hash, chunkIndexes);
+        synchronized (embeddingStoreMonitor) {
+            int batchOffset = 0;
+            if (localEmbeddingEnabled) {
+                localEmbeddings = embedSegmentsInBatches(hash, segments, batchOffset, effectiveTotalBatches, "本地向量索引", localEmbeddingModel);
+                localEmbeddingStore.addAll(segmentIds, localEmbeddings, segments);
+                batchOffset += localBatchCount;
+            }
+            if (onlineEmbeddingEnabled) {
+                onlineEmbeddings = embedSegmentsInBatches(hash, segments, batchOffset, effectiveTotalBatches, "在线向量索引", onlineEmbeddingModel);
+                onlineEmbeddingStore.addAll(segmentIds, onlineEmbeddings, segments);
+            }
+        }
+        if (localEmbeddingEnabled || onlineEmbeddingEnabled) {
+            chunkIndexes = buildChunkIndexes(hash, segments, localEmbeddings, onlineEmbeddings);
+            knowledgeChunkIndexService.replaceAll(hash, chunkIndexes);
+        }
+        KnowledgeDocumentRecord record = new KnowledgeDocumentRecord(
+                fileName,
+                originalFilename,
+                hash,
+                source,
+                parserName,
+                extension,
+                size,
+                editable,
+                deletable,
+                processingStatus,
+                statusMessage,
+                progressPercent,
+                currentBatch,
+                effectiveTotalBatches,
+                document.text(),
+                buildChunkInfos(segments),
+                storagePath
+        );
         knowledgeRecords.put(hash, record);
         saveKnowledgeStatus(record);
     }

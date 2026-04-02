@@ -3,6 +3,7 @@ package com.linkjb.aimed.service;
 import com.linkjb.aimed.assistant.LocalStreamingAiMedAgent;
 import com.linkjb.aimed.assistant.OnlineAiMedAgent;
 import com.linkjb.aimed.bean.ChatProviderConfigResponse;
+import dev.langchain4j.model.chat.response.ChatResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -105,9 +106,10 @@ public class ChatApplicationService {
                         charCount.addAndGet(partial == null ? 0 : partial.length());
                         emitter.next(partial);
                     })
-                    .onCompleteResponse(ignored -> {
-                        log.info("model.stream.complete provider={} memoryId={} chunks={} chars={} durationMs={}",
-                                provider, memoryId, chunkCount.get(), charCount.get(), durationMs(startedAt));
+                    .onCompleteResponse(response -> {
+                        log.info("model.stream.complete provider={} memoryId={} chunks={} chars={} durationMs={} finishReason={} outputTokens={}",
+                                provider, memoryId, chunkCount.get(), charCount.get(), durationMs(startedAt),
+                                finishReason(response), outputTokenCount(response));
                         emitter.complete();
                     })
                     .onError(error -> {
@@ -171,5 +173,19 @@ public class ChatApplicationService {
 
     private long durationMs(long startedAt) {
         return (System.nanoTime() - startedAt) / 1_000_000;
+    }
+
+    private String finishReason(ChatResponse response) {
+        if (response == null || response.finishReason() == null) {
+            return "UNKNOWN";
+        }
+        return response.finishReason().name();
+    }
+
+    private Integer outputTokenCount(ChatResponse response) {
+        if (response == null || response.tokenUsage() == null) {
+            return null;
+        }
+        return response.tokenUsage().outputTokenCount();
     }
 }

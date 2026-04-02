@@ -76,11 +76,11 @@ app:
     log-responses: ${EMBEDDING_LOG_RESPONSES:false}
   local-chat:
     base-url: ${LOCAL_CHAT_BASE_URL:http://localhost:11434}
-    model-name: ${LOCAL_CHAT_MODEL_NAME:qwen3.5:4b}
+    model-name: ${LOCAL_CHAT_MODEL_NAME:qwen2.5:3b}
     temperature: ${LOCAL_CHAT_TEMPERATURE:0.3}
-    num-predict: ${LOCAL_CHAT_NUM_PREDICT:384}
+    num-predict: ${LOCAL_CHAT_NUM_PREDICT:1024}
     num-ctx: ${LOCAL_CHAT_NUM_CTX:4096}
-    timeout: ${LOCAL_CHAT_TIMEOUT:PT90S}
+    timeout: ${LOCAL_CHAT_TIMEOUT:PT180S}
     log-requests: ${LOCAL_CHAT_LOG_REQUESTS:false}
     log-responses: ${LOCAL_CHAT_LOG_RESPONSES:false}
   online-chat:

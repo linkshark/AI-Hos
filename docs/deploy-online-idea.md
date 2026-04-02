@@ -2,7 +2,7 @@
 
 这版部署方式分成两层：
 
-- `mariadb` 和 `mongo` 作为服务器上的独立容器长期运行
+- `mariadb`、`mongo`、`redis`、`chroma` 作为服务器上的独立容器长期运行
 - IDEA 里的 [AI-Med.run.xml](/Users/shenchaoqi/codex/AiMed/.run/AI-Med.run.xml) 运行远程部署脚本，只负责重建项目自己的 `backend` / `frontend`
 
 这样你以后每次点 IDEA 的运行配置：
@@ -14,9 +14,13 @@
 
 ## 1. 数据服务单独部署
 
-数据库和 Mongo 单独部署脚本：
+数据库、Mongo、Redis 单独部署脚本：
 
 - [deploy-data-services.sh](/Users/shenchaoqi/codex/AiMed/scripts/deploy-data-services.sh)
+
+Chroma 单独部署脚本：
+
+- [deploy-chroma-remote.sh](/Users/shenchaoqi/codex/AiMed/scripts/deploy-chroma-remote.sh)
 
 在服务器项目目录执行一次：
 
@@ -31,8 +35,10 @@ cd /home/shark/AI-Hos
 - MariaDB 对外端口：`13306`
 - Mongo 用户名：`shark`
 - Mongo 对外端口：`27018`
+- Redis 对外端口：`6379`
+- Chroma 对外端口：`8000`
 
-这两个容器是长期运行的基础设施，不需要每次部署项目都重建。
+这些容器是长期运行的基础设施，不需要每次部署项目都重建。
 脚本会复用已有 Docker 卷，不会因为你更新项目镜像而清空数据库数据。
 
 ## 2. 应用 compose 的职责
@@ -46,6 +52,8 @@ cd /home/shark/AI-Hos
 
 - MariaDB `13306`
 - MongoDB `27018`
+- Redis `6379`
+- Chroma `8000`
 
 ## 3. 私有 YAML 配置
 
@@ -56,6 +64,13 @@ cd /home/shark/AI-Hos
 - 线上 gitignore 私有文件 [application-online.yml](/Users/shenchaoqi/codex/AiMed/config/application-online.yml)
 
 远程部署脚本会把本地 [application-online.yml](/Users/shenchaoqi/codex/AiMed/config/application-online.yml) 上传到服务器 `config/` 目录，然后再执行 `docker compose up -d --build`。
+
+脚本内置了部署前后检查：
+
+- 本地校验 `application-online.yml` 的关键字段
+- 远端检查 Chroma `127.0.0.1:8000`
+- 远端检查 MariaDB `13306`、MongoDB `27018`、Redis `6379`
+- 部署后检查 `http://127.0.0.1/` 和 `http://127.0.0.1/api/doc.html`
 
 ## 4. IDEA 里的运行方式
 
@@ -69,12 +84,14 @@ cd /home/shark/AI-Hos
 
 ## 5. 服务器上的数据服务环境
 
-服务器上独立 MariaDB / Mongo 当前使用：
+服务器上独立 MariaDB / Mongo / Redis / Chroma 当前使用：
 
 - MariaDB 端口：`13306`
 - MariaDB 用户名：`shark`
 - MongoDB 端口：`27018`
 - MongoDB 用户名：`shark`
+- Redis 端口：`6379`
+- Chroma 端口：`8000`
 - 四个容器统一时区：`Asia/Shanghai`
 
 ## 6. 访问和对外转发端口
@@ -84,12 +101,16 @@ cd /home/shark/AI-Hos
 - 站点：服务器 `80`，由你的外部网关转发到公网 `8888`
 - MariaDB：`13306`
 - MongoDB：`27018`
+- Redis：`6379`
+- Chroma：`8000`
 
 按你现在的网关方式，推荐这样转发：
 
 - 外部 `8888` -> 服务器 `80`
 - 外部数据库端口 -> 服务器 `13306`
 - 外部 Mongo 端口 -> 服务器 `27018`
+- 外部 Redis 端口 -> 服务器 `6379`
+- 外部 Chroma 端口 -> 服务器 `8000`
 
 ## 7. 数据不会被清理的条件
 
@@ -107,8 +128,10 @@ cd /home/shark/AI-Hos
 
 - `ai-hos_aimed-online-mysql-data`
 - `ai-hos_aimed-online-mongo-data`
+- `aimed-redis-data`
+- `chroma-data`
 
-那数据库和 Mongo 数据就不会被清理。
+那数据库、Mongo、Redis、Chroma 数据就不会被清理。
 
 普通项目更新只会影响：
 
@@ -119,6 +142,8 @@ cd /home/shark/AI-Hos
 
 - `aimed-mariadb`
 - `aimed-mongo`
+- `aimed-redis`
+- `chroma-db`
 
 ## 8. 推荐的实际使用方式
 
@@ -126,7 +151,7 @@ cd /home/shark/AI-Hos
 
 1. 把项目上传到服务器
 2. 在服务器执行一次 `./scripts/deploy-data-services.sh`
-3. 在服务器创建 `/home/shark/.config/ai-hos/env`
+3. 在服务器执行一次 `./scripts/deploy-chroma-remote.sh`
 4. 在 IDEA 里点 `AI-Med`
 
 后续更新：

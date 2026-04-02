@@ -19,6 +19,35 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "expected: $ROOT_DIR/config/application-online.yml" >&2
   exit 1
 fi
+
+echo "==> validate online config"
+python3 - "$CONFIG_FILE" <<'PY'
+import sys, yaml
+path = sys.argv[1]
+cfg = yaml.safe_load(open(path, 'r', encoding='utf-8')) or {}
+
+def require(value, label):
+    if not value:
+        raise SystemExit(f"invalid online yaml: missing {label}")
+
+app = cfg.get("app", {})
+spring = cfg.get("spring", {})
+require(app.get("chroma", {}).get("base-url"), "app.chroma.base-url")
+require(app.get("online-chat", {}).get("api-key"), "app.online-chat.api-key")
+require(app.get("online-embedding", {}).get("api-key"), "app.online-embedding.api-key")
+require(app.get("vision-chat", {}).get("api-key"), "app.vision-chat.api-key")
+require(spring.get("datasource", {}).get("url"), "spring.datasource.url")
+require(spring.get("datasource", {}).get("username"), "spring.datasource.username")
+require(spring.get("datasource", {}).get("password"), "spring.datasource.password")
+require(spring.get("data", {}).get("mongodb", {}).get("uri"), "spring.data.mongodb.uri")
+require(spring.get("data", {}).get("redis", {}).get("host"), "spring.data.redis.host")
+require(spring.get("data", {}).get("redis", {}).get("password"), "spring.data.redis.password")
+require(spring.get("mail", {}).get("host"), "spring.mail.host")
+require(spring.get("mail", {}).get("username"), "spring.mail.username")
+require(spring.get("mail", {}).get("password"), "spring.mail.password")
+print("online yaml OK")
+PY
+
 CONTROL_PATH="$(mktemp -u "${TMPDIR:-/tmp}/aimed-ssh-ctl.XXXXXX")"
 
 cleanup() {
@@ -63,6 +92,16 @@ rsync -az --delete \
 echo "==> upload online config"
 rsync -az -e "$RSYNC_SSH" "$CONFIG_FILE" "$REMOTE:$REMOTE_DIR/config/application-online.yml"
 
+echo "==> remote preflight"
+"${SSH_CMD[@]}" "$REMOTE" "
+  set -e
+  command -v curl >/dev/null 2>&1 || { echo 'curl not found on remote host' >&2; exit 1; }
+  curl -fsS 'http://127.0.0.1:8000/api/v2/heartbeat' >/dev/null
+  nc -z 127.0.0.1 13306
+  nc -z 127.0.0.1 27018
+  nc -z 127.0.0.1 6379
+"
+
 echo "==> deploy containers"
 "${SSH_CMD[@]}" "$REMOTE" "
   set -e
@@ -70,6 +109,8 @@ echo "==> deploy containers"
   export DOCKER_BUILDKIT=1
   docker compose -f docker-compose.online.yml up -d --build backend frontend
   docker compose -f docker-compose.online.yml ps
+  curl -fsS 'http://127.0.0.1/' >/dev/null
+  curl -fsS 'http://127.0.0.1/api/doc.html' >/dev/null
 "
 
 echo "==> done"

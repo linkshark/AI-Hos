@@ -3,9 +3,14 @@ package com.linkjb.aimed.service;
 import com.linkjb.aimed.assistant.LocalStreamingAiMedAgent;
 import com.linkjb.aimed.assistant.OnlineAiMedAgent;
 import com.linkjb.aimed.bean.ChatProviderConfigResponse;
+import com.linkjb.aimed.config.RequestTraceFilter;
+import com.linkjb.aimed.config.TraceIdProvider;
 import dev.langchain4j.model.chat.response.ChatResponse;
+import org.apache.skywalking.apm.toolkit.trace.ActiveSpan;
+import org.apache.skywalking.apm.toolkit.trace.ConsumerWrapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
@@ -16,6 +21,8 @@ import reactor.core.publisher.FluxSink;
 import java.util.Locale;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Consumer;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -30,6 +37,7 @@ public class ChatApplicationService {
     private final OnlineAiMedAgent onlineAiMedAgent;
     private final KnowledgeBaseService knowledgeBaseService;
     private final VisionChatService visionChatService;
+    private final TraceIdProvider traceIdProvider;
     private final String defaultProvider;
     private final boolean localProviderEnabled;
     private final boolean onlineProviderEnabled;
@@ -38,6 +46,7 @@ public class ChatApplicationService {
                                   OnlineAiMedAgent onlineAiMedAgent,
                                   KnowledgeBaseService knowledgeBaseService,
                                   VisionChatService visionChatService,
+                                  TraceIdProvider traceIdProvider,
                                   @Value("${app.provider.default:LOCAL_OLLAMA}") String defaultProvider,
                                   @Value("${app.provider.local-enabled:true}") boolean localProviderEnabled,
                                   @Value("${app.provider.online-enabled:true}") boolean onlineProviderEnabled) {
@@ -45,6 +54,7 @@ public class ChatApplicationService {
         this.onlineAiMedAgent = onlineAiMedAgent;
         this.knowledgeBaseService = knowledgeBaseService;
         this.visionChatService = visionChatService;
+        this.traceIdProvider = traceIdProvider;
         this.defaultProvider = defaultProvider;
         this.localProviderEnabled = localProviderEnabled;
         this.onlineProviderEnabled = onlineProviderEnabled;
@@ -99,24 +109,25 @@ public class ChatApplicationService {
             long startedAt = System.nanoTime();
             AtomicInteger chunkCount = new AtomicInteger();
             AtomicLong charCount = new AtomicLong();
+            String requestTraceId = traceIdProvider.currentTraceId();
             log.info("model.stream.start provider={} memoryId={} chars={}", provider, memoryId, textLength(message));
             localStreamingAiMedAgent.chat(memoryId, message)
-                    .onPartialResponse(partial -> {
+                    .onPartialResponse(tracedConsumer(requestTraceId, "chat.local.stream.partial", partial -> {
                         chunkCount.incrementAndGet();
                         charCount.addAndGet(partial == null ? 0 : partial.length());
                         emitter.next(partial);
-                    })
-                    .onCompleteResponse(response -> {
+                    }))
+                    .onCompleteResponse(tracedConsumer(requestTraceId, "chat.local.stream.complete", response -> {
                         log.info("model.stream.complete provider={} memoryId={} chunks={} chars={} durationMs={} finishReason={} outputTokens={}",
                                 provider, memoryId, chunkCount.get(), charCount.get(), durationMs(startedAt),
                                 finishReason(response), outputTokenCount(response));
                         emitter.complete();
-                    })
-                    .onError(error -> {
+                    }))
+                    .onError(tracedConsumer(requestTraceId, "chat.local.stream.error", error -> {
                         log.error("model.stream.failed provider={} memoryId={} chunks={} chars={} durationMs={}",
                                 provider, memoryId, chunkCount.get(), charCount.get(), durationMs(startedAt), error);
                         emitter.error(error);
-                    })
+                    }))
                     .start();
         }, FluxSink.OverflowStrategy.BUFFER);
     }
@@ -187,5 +198,30 @@ public class ChatApplicationService {
             return null;
         }
         return response.tokenUsage().outputTokenCount();
+    }
+
+    private <T> Consumer<T> tracedConsumer(String requestTraceId, String operationName, Consumer<T> delegate) {
+        return ConsumerWrapper.of(value -> {
+            Map<String, String> previous = MDC.getCopyOfContextMap();
+            try {
+                // 本地模型的回调线程会脱离原始 Web 请求线程，这里把 trace 和日志上下文补回去，
+                // 这样 SkyWalking span 与业务日志能继续挂在同一条链路上。
+                ActiveSpan.setOperationName(operationName);
+                String currentTraceId = traceIdProvider.currentTraceId();
+                String effectiveTraceId = currentTraceId == null || currentTraceId.isBlank() ? requestTraceId : currentTraceId;
+                if (effectiveTraceId != null && !effectiveTraceId.isBlank()) {
+                    MDC.put(RequestTraceFilter.TRACE_ID_KEY, effectiveTraceId);
+                } else {
+                    MDC.remove(RequestTraceFilter.TRACE_ID_KEY);
+                }
+                delegate.accept(value);
+            } finally {
+                if (previous != null) {
+                    MDC.setContextMap(previous);
+                } else {
+                    MDC.clear();
+                }
+            }
+        });
     }
 }

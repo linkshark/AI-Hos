@@ -1,6 +1,8 @@
 package com.linkjb.aimed.security;
 
 import com.linkjb.aimed.service.RedisAuthStateService;
+import com.linkjb.aimed.service.AppUserService;
+import com.linkjb.aimed.entity.AppUser;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -26,10 +28,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final JwtTokenService jwtTokenService;
     private final RedisAuthStateService redisAuthStateService;
+    private final AppUserService appUserService;
 
-    public JwtAuthenticationFilter(JwtTokenService jwtTokenService, RedisAuthStateService redisAuthStateService) {
+    public JwtAuthenticationFilter(JwtTokenService jwtTokenService,
+                                   RedisAuthStateService redisAuthStateService,
+                                   AppUserService appUserService) {
         this.jwtTokenService = jwtTokenService;
         this.redisAuthStateService = redisAuthStateService;
+        this.appUserService = appUserService;
     }
 
     @Override
@@ -40,12 +46,21 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             try {
                 JwtTokenService.ParsedAccessToken parsed = jwtTokenService.parseAccessToken(token);
                 if (!redisAuthStateService.isAccessTokenBlacklisted(parsed.jti())) {
+                    AppUser currentUser = appUserService.findById(parsed.userId());
+                    if (currentUser == null || !AppUserService.STATUS_ACTIVE.equalsIgnoreCase(currentUser.getStatus())) {
+                        filterChain.doFilter(request, response);
+                        return;
+                    }
                     // 访问请求只信任 access token；refresh token 永远不进入 SecurityContext。
-                    AuthenticatedUser principal = new AuthenticatedUser(parsed.userId(), parsed.email(), parsed.role());
+                    AuthenticatedUser principal = new AuthenticatedUser(
+                            currentUser.getId(),
+                            currentUser.getEmail(),
+                            AppUserService.normalizeRole(currentUser.getRole())
+                    );
                     UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
                             principal,
                             null,
-                            List.of(new SimpleGrantedAuthority("ROLE_" + parsed.role()))
+                            List.of(new SimpleGrantedAuthority("ROLE_" + AppUserService.normalizeRole(currentUser.getRole())))
                     );
                     authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
                     SecurityContextHolder.getContext().setAuthentication(authentication);

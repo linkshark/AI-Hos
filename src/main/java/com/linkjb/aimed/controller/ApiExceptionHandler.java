@@ -11,6 +11,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.data.redis.RedisSystemException;
 import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -59,6 +60,15 @@ public class ApiExceptionHandler {
         String message = fieldError == null ? "请求参数校验失败" : fieldError.getDefaultMessage();
         log.warn("api.exception.validation path={} message={}", request.getRequestURI(), message, exception);
         return buildResponse(HttpStatus.BAD_REQUEST, message, request);
+    }
+
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<ApiErrorResponse> handleResponseStatus(ResponseStatusException exception, HttpServletRequest request) {
+        HttpStatus status = HttpStatus.resolve(exception.getStatusCode().value());
+        HttpStatus resolved = status == null ? HttpStatus.BAD_REQUEST : status;
+        String message = exception.getReason() == null ? "请求处理失败" : exception.getReason();
+        log.warn("api.exception.status path={} status={} message={}", request.getRequestURI(), resolved.value(), message, exception);
+        return buildResponse(resolved, message, request);
     }
 
     @ExceptionHandler(Exception.class)

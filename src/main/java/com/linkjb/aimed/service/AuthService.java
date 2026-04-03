@@ -32,17 +32,20 @@ public class AuthService {
     private final JwtTokenService jwtTokenService;
     private final RedisAuthStateService redisAuthStateService;
     private final MailSenderService mailSenderService;
+    private final AuditLogService auditLogService;
 
     public AuthService(AppUserService appUserService,
                        PasswordEncoder passwordEncoder,
                        JwtTokenService jwtTokenService,
                        RedisAuthStateService redisAuthStateService,
-                       MailSenderService mailSenderService) {
+                       MailSenderService mailSenderService,
+                       AuditLogService auditLogService) {
         this.appUserService = appUserService;
         this.passwordEncoder = passwordEncoder;
         this.jwtTokenService = jwtTokenService;
         this.redisAuthStateService = redisAuthStateService;
         this.mailSenderService = mailSenderService;
+        this.auditLogService = auditLogService;
     }
 
     public MessageResponse sendRegisterCode(RegisterSendCodeRequest request) {
@@ -78,8 +81,10 @@ public class AuthService {
         if (!redisAuthStateService.consumeRegisterCode(email, request.code())) {
             throw new IllegalArgumentException("验证码错误或已过期");
         }
-        AppUser user = appUserService.createUser(email, passwordEncoder.encode(request.password()), request.nickname(), AppUserService.ROLE_USER);
+        AppUser user = appUserService.createUser(email, passwordEncoder.encode(request.password()), request.nickname(), AppUserService.ROLE_PATIENT);
         log.info("auth.register.success userId={} email={}", user.getId(), user.getEmail());
+        auditLogService.recordAuthAction(user.getId(), user.getRole(), AuditLogService.ACTION_AUTH_REGISTER,
+                String.valueOf(user.getId()), "用户注册并完成首次登录: " + user.getEmail());
         return issueTokenPair(user);
     }
 
@@ -94,6 +99,8 @@ public class AuthService {
         }
         appUserService.updateLastLogin(user.getId());
         log.info("auth.login.success userId={} account={}", user.getId(), account);
+        auditLogService.recordAuthAction(user.getId(), user.getRole(), AuditLogService.ACTION_AUTH_LOGIN,
+                String.valueOf(user.getId()), "用户登录: " + user.getEmail());
         return issueTokenPair(user);
     }
 
@@ -109,6 +116,8 @@ public class AuthService {
         }
         // Refresh 时轮换 refresh token，避免长期复用同一令牌。
         redisAuthStateService.revokeRefreshToken(request.refreshToken());
+        auditLogService.recordAuthAction(user.getId(), user.getRole(), AuditLogService.ACTION_AUTH_REFRESH,
+                String.valueOf(user.getId()), "刷新登录态: " + user.getEmail());
         return issueTokenPair(user);
     }
 
@@ -124,19 +133,28 @@ public class AuthService {
         }
         appUserService.updatePassword(user.getId(), passwordEncoder.encode(request.password()));
         log.info("auth.password-reset.success userId={} email={}", user.getId(), email);
+        auditLogService.recordAuthAction(user.getId(), user.getRole(), AuditLogService.ACTION_AUTH_PASSWORD_RESET,
+                String.valueOf(user.getId()), "重置密码: " + user.getEmail());
         return new MessageResponse("密码已重置，请使用新密码登录");
     }
 
     public MessageResponse logout(String accessToken, String refreshToken) {
+        Long userId = null;
+        String role = null;
+        String targetId = null;
         if (StringUtils.hasText(accessToken)) {
             try {
                 JwtTokenService.ParsedAccessToken parsed = jwtTokenService.parseAccessToken(accessToken);
+                userId = parsed.userId();
+                role = parsed.role();
+                targetId = String.valueOf(parsed.userId());
                 redisAuthStateService.blacklistAccessToken(parsed.jti(), parsed.expiresAt());
             } catch (Exception ignored) {
                 // Logout should remain idempotent even if the access token is already expired.
             }
         }
         redisAuthStateService.revokeRefreshToken(refreshToken);
+        auditLogService.recordAuthAction(userId, role, AuditLogService.ACTION_AUTH_LOGOUT, targetId, "用户退出登录");
         return new MessageResponse("已退出登录");
     }
 
@@ -161,7 +179,7 @@ public class AuthService {
     }
 
     private AuthUserResponse toUserResponse(AppUser user) {
-        return new AuthUserResponse(user.getId(), user.getUsername(), user.getEmail(), user.getNickname(), user.getRole(), user.getStatus());
+        return new AuthUserResponse(user.getId(), user.getUsername(), user.getEmail(), user.getNickname(), AppUserService.normalizeRole(user.getRole()), user.getStatus());
     }
 
     private void validatePasswordConfirmation(String password, String confirmPassword) {

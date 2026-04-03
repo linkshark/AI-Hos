@@ -38,7 +38,7 @@ public class AuthSchemaInitializer {
                   email VARCHAR(255) NOT NULL,
                   password_hash VARCHAR(255) NOT NULL,
                   nickname VARCHAR(128) DEFAULT NULL,
-                  role VARCHAR(32) NOT NULL DEFAULT 'USER',
+                  role VARCHAR(32) NOT NULL DEFAULT 'PATIENT',
                   status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
                   last_login_at DATETIME DEFAULT NULL,
                   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -52,6 +52,40 @@ public class AuthSchemaInitializer {
                 """);
         addColumnIfMissing("username", "ALTER TABLE app_user ADD COLUMN username VARCHAR(64) NOT NULL DEFAULT 'user' AFTER id");
         addUniqueIndexIfMissing("uk_app_user_username", "ALTER TABLE app_user ADD UNIQUE KEY uk_app_user_username (username)");
+        jdbcTemplate.update("UPDATE app_user SET role = ? WHERE role = ?", AppUserService.ROLE_PATIENT, AppUserService.LEGACY_ROLE_USER);
+
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS chat_session_owner (
+                  memory_id BIGINT NOT NULL,
+                  user_id BIGINT NOT NULL,
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                  PRIMARY KEY (memory_id),
+                  KEY idx_chat_session_owner_user (user_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """);
+
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS audit_log (
+                  id BIGINT NOT NULL AUTO_INCREMENT,
+                  actor_user_id BIGINT DEFAULT NULL,
+                  actor_role VARCHAR(32) DEFAULT NULL,
+                  action_type VARCHAR(64) NOT NULL,
+                  target_type VARCHAR(64) DEFAULT NULL,
+                  target_id VARCHAR(128) DEFAULT NULL,
+                  summary VARCHAR(512) DEFAULT NULL,
+                  trace_id VARCHAR(64) DEFAULT NULL,
+                  memory_id BIGINT DEFAULT NULL,
+                  provider VARCHAR(64) DEFAULT NULL,
+                  duration_ms BIGINT DEFAULT NULL,
+                  has_attachments TINYINT(1) DEFAULT NULL,
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  PRIMARY KEY (id),
+                  KEY idx_audit_log_action_type (action_type),
+                  KEY idx_audit_log_actor_user_id (actor_user_id),
+                  KEY idx_audit_log_created_at (created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """);
 
         bootstrapAdmin();
     }

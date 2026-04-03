@@ -2,9 +2,11 @@ package com.linkjb.aimed.controller;
 
 import com.linkjb.aimed.bean.ChatForm;
 import com.linkjb.aimed.bean.ChatProviderConfigResponse;
+import com.linkjb.aimed.config.TraceIdProvider;
 import com.linkjb.aimed.security.AuthenticatedUser;
 import com.linkjb.aimed.service.ChatSessionUserBindingService;
 import com.linkjb.aimed.service.ChatApplicationService;
+import com.linkjb.aimed.service.AuditLogService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -30,11 +32,17 @@ public class ChatController {
 
     private final ChatApplicationService chatApplicationService;
     private final ChatSessionUserBindingService chatSessionUserBindingService;
+    private final AuditLogService auditLogService;
+    private final TraceIdProvider traceIdProvider;
 
     public ChatController(ChatApplicationService chatApplicationService,
-                          ChatSessionUserBindingService chatSessionUserBindingService) {
+                          ChatSessionUserBindingService chatSessionUserBindingService,
+                          AuditLogService auditLogService,
+                          TraceIdProvider traceIdProvider) {
         this.chatApplicationService = chatApplicationService;
         this.chatSessionUserBindingService = chatSessionUserBindingService;
+        this.auditLogService = auditLogService;
+        this.traceIdProvider = traceIdProvider;
     }
 
     @Operation(summary = "聊天模型入口配置")
@@ -50,9 +58,20 @@ public class ChatController {
         log.info("chat.controller.request type=json memoryId={} provider={} userId={}",
                 chatForm.getMemoryId(), chatForm.getModelProvider(), currentUser == null ? null : currentUser.userId());
         if (currentUser != null) {
-            chatSessionUserBindingService.bind(chatForm.getMemoryId(), currentUser.userId());
+            chatSessionUserBindingService.bindOrValidateOwnership(chatForm.getMemoryId(), currentUser.userId());
         }
-        return chatApplicationService.chat(chatForm.getMemoryId(), chatForm.getMessage(), chatForm.getModelProvider());
+        String provider = chatApplicationService.normalizeProvider(chatForm.getModelProvider());
+        long startedAt = System.nanoTime();
+        return chatApplicationService.chat(chatForm.getMemoryId(), chatForm.getMessage(), provider)
+                .doFinally(signalType -> auditLogService.recordChatSummary(
+                        currentUser == null ? null : currentUser.userId(),
+                        currentUser == null ? null : currentUser.role(),
+                        chatForm.getMemoryId(),
+                        provider,
+                        (System.nanoTime() - startedAt) / 1_000_000,
+                        false,
+                        traceIdProvider.currentTraceId()
+                ));
     }
 
     @Operation(summary = "携带附件的对话")
@@ -65,8 +84,19 @@ public class ChatController {
         log.info("chat.controller.request type=multipart memoryId={} provider={} attachments={} userId={}",
                 memoryId, modelProvider, files == null ? 0 : files.length, currentUser == null ? null : currentUser.userId());
         if (currentUser != null) {
-            chatSessionUserBindingService.bind(memoryId, currentUser.userId());
+            chatSessionUserBindingService.bindOrValidateOwnership(memoryId, currentUser.userId());
         }
-        return chatApplicationService.chatWithFiles(memoryId, message, modelProvider, files);
+        String provider = chatApplicationService.normalizeProvider(modelProvider);
+        long startedAt = System.nanoTime();
+        return chatApplicationService.chatWithFiles(memoryId, message, provider, files)
+                .doFinally(signalType -> auditLogService.recordChatSummary(
+                        currentUser == null ? null : currentUser.userId(),
+                        currentUser == null ? null : currentUser.role(),
+                        memoryId,
+                        provider,
+                        (System.nanoTime() - startedAt) / 1_000_000,
+                        files != null && files.length > 0,
+                        traceIdProvider.currentTraceId()
+                ));
     }
 }

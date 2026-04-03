@@ -7,11 +7,21 @@ services:
     restart: unless-stopped
     environment:
       TZ: Asia/Shanghai
+      JWT_SECRET: c1b3b95b488458ee402b7e73dd726eb69c93efc2bed8946e2bf9460b2482fc8c
+      APP_ADMIN_USERNAME: shulan-admin
+      JAVA_TOOL_OPTIONS: >-
+        -javaagent:/skywalking/agent/skywalking-agent.jar
+        -Dskywalking.agent.service_name=aihos
+        -Dskywalking.agent.instance_name=aihos-online
+        -Dskywalking.collector.backend_service=aimed-skywalking-oap:11800
     volumes:
       - aimed-online-knowledge-data:/app/data/knowledge-base
       - ./config:/app/config:ro
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
+    networks:
+      - default
+      - aimed-observability
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -32,3 +42,8 @@ services:
       - /etc/timezone:/etc/timezone:ro
 volumes:
   aimed-online-knowledge-data:
+
+networks:
+  aimed-observability:
+    external: true
+    name: aimed-observability

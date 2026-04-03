@@ -1,0 +1,73 @@
+networks:
+  aimed-observability:
+    name: aimed-observability
+
+volumes:
+  aimed-skywalking-banyandb-data:
+
+services:
+  banyandb:
+    image: apache/skywalking-banyandb:0.8.0
+    container_name: aimed-skywalking-banyandb
+    restart: unless-stopped
+    command: ["standalone"]
+    ports:
+      - "17912:17912"
+      - "17913:17913"
+    volumes:
+      - aimed-skywalking-banyandb-data:/tmp
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    networks:
+      - aimed-observability
+
+  oap:
+    image: apache/skywalking-oap-server:10.2.0
+    container_name: aimed-skywalking-oap
+    restart: unless-stopped
+    depends_on:
+      - banyandb
+    environment:
+      TZ: Asia/Shanghai
+      SW_STORAGE: banyandb
+      SW_STORAGE_BANYANDB_TARGETS: banyandb:17912
+    ports:
+      - "11800:11800"
+      - "12800:12800"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    networks:
+      - aimed-observability
+
+  ui:
+    image: apache/skywalking-ui:10.2.0
+    container_name: aimed-skywalking-ui
+    restart: unless-stopped
+    depends_on:
+      - oap
+    environment:
+      TZ: Asia/Shanghai
+      SW_OAP_ADDRESS: http://oap:12800
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    networks:
+      - aimed-observability
+
+  auth-proxy:
+    image: nginx:1.27-alpine
+    container_name: aimed-skywalking-auth-proxy
+    restart: unless-stopped
+    depends_on:
+      - ui
+    ports:
+      - "9200:80"
+    volumes:
+      - ./docker/skywalking/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./docker/skywalking/aihos-embed.js:/etc/nginx/embed/aihos-embed.js:ro
+      - ./.secrets/skywalking.htpasswd:/etc/nginx/.htpasswd:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    networks:
+      - aimed-observability

@@ -17,6 +17,8 @@
         <langchain4j.version>1.12.2</langchain4j.version>
         <langchain4j.community.version>1.12.2-beta22</langchain4j.community.version>
         <mybatis-plus.version>3.5.11</mybatis-plus.version>
+        <skywalking.version>9.6.0</skywalking.version>
+        <skywalking.agent.path>${project.basedir}/.skywalking/agent/skywalking-agent.jar</skywalking.agent.path>
     </properties>
 
     <dependencies>
@@ -165,6 +167,11 @@
             <artifactId>fastjson</artifactId>
             <version>1.2.83</version>
         </dependency>
+        <dependency>
+            <groupId>org.apache.skywalking</groupId>
+            <artifactId>apm-toolkit-trace</artifactId>
+            <version>${skywalking.version}</version>
+        </dependency>
 
     </dependencies>
 
@@ -203,6 +210,15 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <version>${spring-boot.version}</version>
+                <configuration>
+                    <fork>true</fork>
+                    <jvmArguments>
+                        -javaagent:${skywalking.agent.path}
+                        -Dskywalking.agent.service_name=aihos
+                        -Dskywalking.agent.instance_name=aihos-local
+                        -Dskywalking.collector.backend_service=shenchaoqi.x3322.net:11800
+                    </jvmArguments>
+                </configuration>
                 <executions>
                     <execution>
                         <goals>

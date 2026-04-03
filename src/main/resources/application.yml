@@ -1,4 +1,6 @@
 spring:
+  application:
+    name: aihos
   output:
     ansi:
       enabled: always
@@ -42,6 +44,8 @@ server:
   address: ${SERVER_ADDRESS:0.0.0.0}
 
 app:
+  runtime:
+    online-config: false
   auth:
     jwt-secret: ${JWT_SECRET:change-me-for-production-change-me-for-production}
     access-expires: ${JWT_ACCESS_EXPIRES:PT30M}
@@ -59,6 +63,10 @@ app:
       max-pool-size: ${WEB_ASYNC_MAX_POOL_SIZE:16}
       queue-capacity: ${WEB_ASYNC_QUEUE_CAPACITY:200}
       timeout: ${WEB_ASYNC_TIMEOUT:PT60S}
+  security:
+    allowed-origin-patterns:
+      - http://localhost:*
+      - http://127.0.0.1:*
   provider:
     default: ${APP_PROVIDER_DEFAULT:LOCAL_OLLAMA}
     local-enabled: ${APP_PROVIDER_LOCAL_ENABLED:true}

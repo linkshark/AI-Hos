@@ -394,6 +394,7 @@ public class KnowledgeBaseService {
                 continue;
             }
             String originalFilename = StringUtils.hasText(file.getOriginalFilename()) ? file.getOriginalFilename() : "unnamed";
+            //获取格式后缀名
             String extension = getExtension(originalFilename);
             if (!CHAT_ATTACHMENT_EXTENSIONS.contains(extension)) {
                 throw new IOException("聊天附件暂不支持该格式: " + originalFilename);

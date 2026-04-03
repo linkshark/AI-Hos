@@ -14,7 +14,7 @@ public class AuthProperties {
     private boolean adminBootstrapEnabled = true;
     private String adminUsername = "admin";
     private String adminEmail = "admin@shulan.local";
-    private String adminPassword = "13588035530";
+    private String adminPassword = "change-me-admin-password";
     private String adminNickname = "树兰管理员";
 
     public String getJwtSecret() {

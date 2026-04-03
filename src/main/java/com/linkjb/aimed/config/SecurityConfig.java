@@ -24,14 +24,22 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import org.springframework.web.cors.CorsUtils;
 
 import java.io.IOException;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 @Configuration
 @EnableMethodSecurity
 public class SecurityConfig {
+
+    private final AppSecurityProperties appSecurityProperties;
+
+    public SecurityConfig(AppSecurityProperties appSecurityProperties) {
+        this.appSecurityProperties = appSecurityProperties;
+    }
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http,
@@ -46,6 +54,7 @@ public class SecurityConfig {
                         // controller has already started writing the body. Do not re-apply
                         // endpoint authorization on those internal dispatches.
                         .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
+                        .requestMatchers(CorsUtils::isPreFlightRequest).permitAll()
                         .requestMatchers("/error", "/doc.html", "/favicon.ico", "/webjars/**", "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html", "/actuator/health").permitAll()
                         .requestMatchers(
                                 "/aimed/auth/login",
@@ -56,10 +65,12 @@ public class SecurityConfig {
                                 "/aimed/auth/refresh"
                         ).permitAll()
                         .requestMatchers("/aimed/auth/me", "/aimed/auth/logout").authenticated()
-                        .requestMatchers("/ws/knowledge").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/aimed/chat/provider-config").authenticated()
+                        .requestMatchers("/ws/knowledge").hasRole("ADMIN")
                         .requestMatchers("/aimed/knowledge/**").hasRole("ADMIN")
+                        .requestMatchers("/aimed/admin/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.POST, "/aimed/chat").authenticated()
-                        .anyRequest().permitAll()
+                        .anyRequest().denyAll()
                 )
                 .exceptionHandling(exceptions -> exceptions
                         .authenticationEntryPoint((request, response, exception) ->
@@ -79,10 +90,11 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOriginPatterns(List.of("*"));
+        configuration.setAllowedOriginPatterns(new ArrayList<>(appSecurityProperties.getAllowedOriginPatterns()));
         configuration.setAllowedMethods(List.of("*"));
         configuration.setAllowedHeaders(List.of("*"));
         configuration.setExposedHeaders(List.of("X-Trace-Id"));
+        configuration.setAllowCredentials(true);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);
         return source;

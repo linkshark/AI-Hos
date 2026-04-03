@@ -1,18 +1,28 @@
 package com.linkjb.aimed.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.linkjb.aimed.bean.AdminUserItem;
+import com.linkjb.aimed.bean.PagedResponse;
 import com.linkjb.aimed.entity.AppUser;
 import com.linkjb.aimed.mapper.AppUserMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Service
 public class AppUserService {
 
     public static final String ROLE_ADMIN = "ADMIN";
-    public static final String ROLE_USER = "USER";
+    public static final String ROLE_PATIENT = "PATIENT";
+    public static final String ROLE_DOCTOR = "DOCTOR";
+    public static final String LEGACY_ROLE_USER = "USER";
     public static final String STATUS_ACTIVE = "ACTIVE";
     public static final String STATUS_DISABLED = "DISABLED";
 
@@ -74,10 +84,32 @@ public class AppUserService {
         user.setEmail(normalizeEmail(email));
         user.setPasswordHash(passwordHash);
         user.setNickname(StringUtils.hasText(nickname) ? nickname.trim() : defaultNickname(email));
-        user.setRole(StringUtils.hasText(role) ? role : ROLE_USER);
+        user.setRole(StringUtils.hasText(role) ? normalizeRole(role) : ROLE_PATIENT);
         user.setStatus(STATUS_ACTIVE);
         appUserMapper.insert(user);
         return user;
+    }
+
+    public void updateRole(Long userId, String role) {
+        if (userId == null || !StringUtils.hasText(role)) {
+            return;
+        }
+        AppUser user = new AppUser();
+        user.setId(userId);
+        user.setRole(normalizeRole(role));
+        user.setUpdatedAt(LocalDateTime.now());
+        appUserMapper.updateById(user);
+    }
+
+    public void updateStatus(Long userId, String status) {
+        if (userId == null || !StringUtils.hasText(status)) {
+            return;
+        }
+        AppUser user = new AppUser();
+        user.setId(userId);
+        user.setStatus(normalizeStatus(status));
+        user.setUpdatedAt(LocalDateTime.now());
+        appUserMapper.updateById(user);
     }
 
     public void updateLastLogin(Long userId) {
@@ -107,6 +139,107 @@ public class AppUserService {
 
     public String normalizeUsername(String username) {
         return username == null ? null : username.trim().toLowerCase();
+    }
+
+    public long countByRole(String role) {
+        if (!StringUtils.hasText(role)) {
+            return 0;
+        }
+        return appUserMapper.selectCount(new LambdaQueryWrapper<AppUser>()
+                .eq(AppUser::getRole, normalizeRole(role)));
+    }
+
+    public long countByRoleAndStatus(String role, String status) {
+        if (!StringUtils.hasText(role) || !StringUtils.hasText(status)) {
+            return 0;
+        }
+        return appUserMapper.selectCount(new LambdaQueryWrapper<AppUser>()
+                .eq(AppUser::getRole, normalizeRole(role))
+                .eq(AppUser::getStatus, normalizeStatus(status)));
+    }
+
+    public Map<Long, AppUser> mapByIds(Set<Long> userIds) {
+        if (userIds == null || userIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return appUserMapper.selectBatchIds(userIds).stream()
+                .collect(Collectors.toMap(AppUser::getId, Function.identity()));
+    }
+
+    public PagedResponse<AdminUserItem> listUsers(int page, int size, String keyword, String role, String status) {
+        int safePage = Math.max(page, 1);
+        int safeSize = Math.min(Math.max(size, 1), 100);
+
+        LambdaQueryWrapper<AppUser> wrapper = new LambdaQueryWrapper<>();
+        if (StringUtils.hasText(keyword)) {
+            String normalizedKeyword = keyword.trim();
+            wrapper.and(condition -> condition
+                    .like(AppUser::getEmail, normalizedKeyword)
+                    .or()
+                    .like(AppUser::getUsername, normalizedKeyword)
+                    .or()
+                    .like(AppUser::getNickname, normalizedKeyword));
+        }
+        if (StringUtils.hasText(role)) {
+            wrapper.eq(AppUser::getRole, normalizeRole(role));
+        }
+        if (StringUtils.hasText(status)) {
+            wrapper.eq(AppUser::getStatus, status.trim().toUpperCase());
+        }
+
+        long total = appUserMapper.selectCount(wrapper);
+        List<AppUser> users = total == 0
+                ? Collections.emptyList()
+                : appUserMapper.selectList(wrapper.orderByDesc(AppUser::getCreatedAt, AppUser::getId)
+                .last("LIMIT " + ((safePage - 1) * safeSize) + ", " + safeSize));
+        return new PagedResponse<>(total, safePage, safeSize, users.stream().map(this::toAdminUserItem).toList());
+    }
+
+    public AdminUserItem toAdminUserItem(AppUser user) {
+        if (user == null) {
+            return null;
+        }
+        return new AdminUserItem(
+                user.getId(),
+                user.getUsername(),
+                user.getEmail(),
+                user.getNickname(),
+                normalizeRole(user.getRole()),
+                user.getStatus(),
+                user.getCreatedAt(),
+                user.getLastLoginAt()
+        );
+    }
+
+    public static boolean isSupportedRole(String role) {
+        if (!StringUtils.hasText(role)) {
+            return false;
+        }
+        String normalized = normalizeRole(role);
+        return ROLE_ADMIN.equals(normalized) || ROLE_PATIENT.equals(normalized) || ROLE_DOCTOR.equals(normalized);
+    }
+
+    public static boolean isSupportedStatus(String status) {
+        if (!StringUtils.hasText(status)) {
+            return false;
+        }
+        String normalized = normalizeStatus(status);
+        return STATUS_ACTIVE.equals(normalized) || STATUS_DISABLED.equals(normalized);
+    }
+
+    public static String normalizeRole(String role) {
+        if (!StringUtils.hasText(role)) {
+            return ROLE_PATIENT;
+        }
+        String normalized = role.trim().toUpperCase();
+        return LEGACY_ROLE_USER.equals(normalized) ? ROLE_PATIENT : normalized;
+    }
+
+    public static String normalizeStatus(String status) {
+        if (!StringUtils.hasText(status)) {
+            return STATUS_ACTIVE;
+        }
+        return status.trim().toUpperCase();
     }
 
     private String defaultNickname(String email) {

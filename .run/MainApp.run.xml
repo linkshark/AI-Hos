@@ -1,0 +1,19 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="MainApp" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot" nameIsGenerated="true">
+    <option name="ALTERNATIVE_JRE_PATH" value="21" />
+    <option name="ALTERNATIVE_JRE_PATH_ENABLED" value="true" />
+    <option name="VM_PARAMETERS" value="-javaagent:$PROJECT_DIR$/.skywalking/agent/skywalking-agent.jar -Dskywalking.agent.service_name=aihos -Dskywalking.agent.instance_name=aihos-local -Dskywalking.collector.backend_service=shenchaoqi.x3322.net:11800 -Dhttp.nonProxyHosts=127.0.0.1|localhost|*.local|shenchaoqi.x3322.net|*.x3322.net -Dhttps.nonProxyHosts=127.0.0.1|localhost|*.local|shenchaoqi.x3322.net|*.x3322.net -DsocksNonProxyHosts=127.0.0.1|localhost|*.local|shenchaoqi.x3322.net|*.x3322.net -Duser.timezone=Asia/Shanghai" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <module name="ai-langchain4j" />
+    <option name="SPRING_BOOT_MAIN_CLASS" value="com.linkjb.aimed.MainApp" />
+    <extension name="coverage">
+      <pattern>
+        <option name="PATTERN" value="com.linkjb.aimed.*" />
+        <option name="ENABLED" value="true" />
+      </pattern>
+    </extension>
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>

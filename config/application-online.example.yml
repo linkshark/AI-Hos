@@ -7,6 +7,8 @@ app:
     api-key: change-me
 
 spring:
+  application:
+    name: aihos
   datasource:
     url: jdbc:mysql://host.docker.internal:13306/aimed?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: change-me

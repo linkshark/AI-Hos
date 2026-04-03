@@ -149,6 +149,15 @@ ollama show qwen2.5vl:7b
 - RAG embedding：本地 `bge-m3:latest`
 - 千问在线：作为可切换入口保留，主要用于需要更高回答质量或在线视觉兜底的场景
 
+本地模型如果出现“回答说到一半就停了”，优先检查本地输出上限。当前默认建议至少：
+
+```bash
+export LOCAL_CHAT_NUM_PREDICT='1024'
+export LOCAL_CHAT_TIMEOUT='PT180S'
+```
+
+如果你本机显存或内存足够，且经常要输出较长的医学解释，可以继续把 `LOCAL_CHAT_NUM_PREDICT` 提到 `1536` 或 `2048`。
+
 模型选择说明：
 
 - `qwen2.5:3b` 是当前默认离线文本模型，响应更快，也不会像思维链模型那样在当前流式链路里空转
@@ -162,6 +171,12 @@ ollama show qwen2.5vl:7b
 ```bash
 mvn spring-boot:run
 ```
+
+当前本地默认也会通过 SkyWalking Java Agent 把链路上报到远端 SkyWalking：
+
+- 服务名：`aihos`
+- 实例名：`aihos-local`
+- OAP gRPC 端点：`shenchaoqi.x3322.net:11800`
 
 启动成功后可以访问：
 

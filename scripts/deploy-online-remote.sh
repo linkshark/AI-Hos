@@ -34,7 +34,8 @@ app = cfg.get("app", {})
 spring = cfg.get("spring", {})
 require(app.get("chroma", {}).get("base-url"), "app.chroma.base-url")
 require(app.get("online-chat", {}).get("api-key"), "app.online-chat.api-key")
-require(app.get("online-embedding", {}).get("api-key"), "app.online-embedding.api-key")
+require(app.get("embedding", {}).get("base-url"), "app.embedding.base-url")
+require(app.get("embedding", {}).get("model-name"), "app.embedding.model-name")
 require(app.get("vision-chat", {}).get("api-key"), "app.vision-chat.api-key")
 require(spring.get("datasource", {}).get("url"), "spring.datasource.url")
 require(spring.get("datasource", {}).get("username"), "spring.datasource.username")
@@ -47,6 +48,13 @@ require(spring.get("mail", {}).get("username"), "spring.mail.username")
 require(spring.get("mail", {}).get("password"), "spring.mail.password")
 print("online yaml OK")
 PY
+
+EMBEDDING_MODEL_NAME="$(python3 - "$CONFIG_FILE" <<'PY'
+import sys, yaml
+cfg = yaml.safe_load(open(sys.argv[1], 'r', encoding='utf-8')) or {}
+print(((cfg.get("app") or {}).get("embedding") or {}).get("model-name") or "")
+PY
+)"
 
 CONTROL_PATH="$(mktemp -u "${TMPDIR:-/tmp}/aimed-ssh-ctl.XXXXXX")"
 
@@ -73,7 +81,7 @@ ssh -MNf "${COMMON_SSH_OPTS[@]}" "$REMOTE"
 MASTER_STARTED=1
 
 echo "==> ensure remote directory"
-"${SSH_CMD[@]}" "$REMOTE" "mkdir -p '$REMOTE_DIR' '$REMOTE_DIR/config'"
+"${SSH_CMD[@]}" "$REMOTE" "mkdir -p '$REMOTE_DIR' '$REMOTE_DIR/config' '$REMOTE_DIR/data/knowledge-base'"
 
 echo "==> sync project"
 rsync -az --delete \
@@ -83,14 +91,43 @@ rsync -az --delete \
   --exclude '.idea' \
   --exclude '.vscode' \
   --exclude '.DS_Store' \
+  --exclude '.secrets' \
   --exclude 'config/application-local.yml' \
   --exclude 'config/application-online.yml' \
   --exclude 'aimed-ui/node_modules' \
   -e "$RSYNC_SSH" \
   "$ROOT_DIR/" "$REMOTE:$REMOTE_DIR/"
 
+echo "==> sync knowledge-base files"
+rsync -az --delete \
+  -e "$RSYNC_SSH" \
+  "$ROOT_DIR/data/knowledge-base/" "$REMOTE:$REMOTE_DIR/data/knowledge-base/"
+
 echo "==> upload online config"
 rsync -az -e "$RSYNC_SSH" "$CONFIG_FILE" "$REMOTE:$REMOTE_DIR/config/application-online.yml"
+
+echo "==> verify shared embedding index"
+"${SSH_CMD[@]}" "$REMOTE" "
+  set -e
+  MODEL_NAME='$EMBEDDING_MODEL_NAME'
+  MISSING_MODEL=\$(docker exec aimed-mariadb mysql -N -B -ushark -pShark1996! -D aimed -e \"
+    SELECT COUNT(*)
+    FROM knowledge_file_status
+    WHERE source = 'uploaded'
+      AND processing_status = 'READY'
+      AND (embedding_model_name IS NULL OR embedding_model_name <> '\$MODEL_NAME')
+  \")
+  MISSING_VECTOR=\$(docker exec aimed-mariadb mysql -N -B -ushark -pShark1996! -D aimed -e \"
+    SELECT COUNT(*)
+    FROM knowledge_chunk_index
+    WHERE embedding IS NULL OR embedding = ''
+  \")
+  if [ \"\$MISSING_MODEL\" -ne 0 ] || [ \"\$MISSING_VECTOR\" -ne 0 ]; then
+    echo \"shared embedding index is incomplete: model_mismatch=\$MISSING_MODEL missing_vectors=\$MISSING_VECTOR\" >&2
+    echo \"please run local knowledge build with \$MODEL_NAME before deploying the online read-only node\" >&2
+    exit 1
+  fi
+"
 
 echo "==> remote preflight"
 "${SSH_CMD[@]}" "$REMOTE" "
@@ -109,8 +146,14 @@ echo "==> deploy containers"
   export DOCKER_BUILDKIT=1
   docker compose -f docker-compose.online.yml up -d --build backend frontend
   docker compose -f docker-compose.online.yml ps
-  curl -fsS 'http://127.0.0.1/' >/dev/null
-  curl -fsS 'http://127.0.0.1/api/doc.html' >/dev/null
+  for i in \$(seq 1 100); do
+    if curl -fsS 'http://127.0.0.1/' >/dev/null && curl -fsS 'http://127.0.0.1/api/doc.html' >/dev/null; then
+      exit 0
+    fi
+    sleep 3
+  done
+  echo 'online services did not become ready in time' >&2
+  exit 1
 "
 
 echo "==> done"

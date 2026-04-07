@@ -54,7 +54,7 @@ app:
     mail-mock-enabled: ${MAIL_MOCK_ENABLED:true}
     admin-bootstrap-enabled: ${APP_ADMIN_BOOTSTRAP_ENABLED:true}
     admin-username: ${APP_ADMIN_USERNAME:admin}
-    admin-email: ${APP_ADMIN_EMAIL:admin@shulan.local}
+    admin-email: ${APP_ADMIN_EMAIL:654735670@qq.com}
     admin-password: ${APP_ADMIN_PASSWORD:change-me-admin-password}
     admin-nickname: ${APP_ADMIN_NICKNAME:树兰管理员}
   web:
@@ -72,9 +72,9 @@ app:
     local-enabled: ${APP_PROVIDER_LOCAL_ENABLED:true}
     online-enabled: ${APP_PROVIDER_ONLINE_ENABLED:true}
   embedding:
-    local-enabled: ${APP_EMBEDDING_LOCAL_ENABLED:true}
-    online-enabled: ${APP_EMBEDDING_ONLINE_ENABLED:false}
+    provider: ${EMBEDDING_PROVIDER:OLLAMA}
     base-url: ${EMBEDDING_BASE_URL:http://localhost:11434}
+    api-key: ${EMBEDDING_API_KEY:${BL_KEY:}}
     model-name: ${EMBEDDING_MODEL_NAME:bge-m3:latest}
     timeout: ${EMBEDDING_TIMEOUT:PT90S}
     max-attempts: ${EMBEDDING_MAX_ATTEMPTS:3}
@@ -99,14 +99,6 @@ app:
     timeout: ${ONLINE_CHAT_TIMEOUT:PT90S}
     log-requests: ${ONLINE_CHAT_LOG_REQUESTS:true}
     log-responses: ${ONLINE_CHAT_LOG_RESPONSES:true}
-  online-embedding:
-    base-url: ${ONLINE_EMBEDDING_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
-    api-key: ${ONLINE_EMBEDDING_API_KEY:${BL_KEY:}}
-    model-name: ${ONLINE_EMBEDDING_MODEL_NAME:text-embedding-v4}
-    timeout: ${ONLINE_EMBEDDING_TIMEOUT:PT90S}
-    batch-size: ${ONLINE_EMBEDDING_BATCH_SIZE:10}
-    log-requests: ${ONLINE_EMBEDDING_LOG_REQUESTS:false}
-    log-responses: ${ONLINE_EMBEDDING_LOG_RESPONSES:false}
   vision-chat:
     base-url: ${VISION_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
     api-key: ${VISION_API_KEY:${BL_KEY:}}
@@ -123,6 +115,7 @@ app:
   knowledge-base:
     storage-dir: ${KNOWLEDGE_BASE_STORAGE_DIR:data/knowledge-base}
     bootstrap-enabled: ${KNOWLEDGE_BASE_BOOTSTRAP_ENABLED:true}
+    embedding-build-enabled: ${KNOWLEDGE_BASE_EMBEDDING_BUILD_ENABLED:true}
     chunk-size: ${KNOWLEDGE_CHUNK_SIZE:1000}
     chunk-overlap: ${KNOWLEDGE_CHUNK_OVERLAP:150}
     max-chunk-size: ${KNOWLEDGE_MAX_CHUNK_SIZE:4000}

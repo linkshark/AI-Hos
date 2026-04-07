@@ -44,35 +44,18 @@ public class AiMedAgentConfig {
 //    }
 //
     @Autowired
-    @Qualifier("localEmbeddingStore")
-    private EmbeddingStore<TextSegment> localEmbeddingStore;
+    @Qualifier("knowledgeEmbeddingStore")
+    private EmbeddingStore<TextSegment> knowledgeEmbeddingStore;
     @Autowired
-    @Qualifier("onlineEmbeddingStore")
-    private EmbeddingStore<TextSegment> onlineEmbeddingStore;
-    @Autowired
-    @Qualifier("localEmbeddingModel")
-    private EmbeddingModel localEmbeddingModel;
-    @Autowired
-    @Qualifier("onlineEmbeddingModel")
-    private EmbeddingModel onlineEmbeddingModel;
+    @Qualifier("knowledgeEmbeddingModel")
+    private EmbeddingModel knowledgeEmbeddingModel;
 
-    @Bean(name = "contentRetrieverLocal")
-    ContentRetriever contentRetrieverLocal() {
+    @Bean(name = "contentRetrieverKnowledge")
+    ContentRetriever contentRetrieverKnowledge() {
         return EmbeddingStoreContentRetriever
                 .builder()
-                .embeddingModel(localEmbeddingModel)
-                .embeddingStore(localEmbeddingStore)
-                .maxResults(1)
-                .minScore(0.8)
-                .build();
-    }
-
-    @Bean(name = "contentRetrieverOnline")
-    ContentRetriever contentRetrieverOnline() {
-        return EmbeddingStoreContentRetriever
-                .builder()
-                .embeddingModel(onlineEmbeddingModel)
-                .embeddingStore(onlineEmbeddingStore)
+                .embeddingModel(knowledgeEmbeddingModel)
+                .embeddingStore(knowledgeEmbeddingStore)
                 .maxResults(1)
                 .minScore(0.8)
                 .build();

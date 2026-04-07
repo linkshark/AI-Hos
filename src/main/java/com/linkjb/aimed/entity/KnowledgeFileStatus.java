@@ -24,6 +24,7 @@ public class KnowledgeFileStatus {
     private Integer progressPercent;
     private Integer currentBatch;
     private Integer totalBatches;
+    private String embeddingModelName;
     private String extractedText;
     private Integer extractedCharacters;
     private Integer chunkCount;
@@ -148,6 +149,14 @@ public class KnowledgeFileStatus {
 
     public void setTotalBatches(Integer totalBatches) {
         this.totalBatches = totalBatches;
+    }
+
+    public String getEmbeddingModelName() {
+        return embeddingModelName;
+    }
+
+    public void setEmbeddingModelName(String embeddingModelName) {
+        this.embeddingModelName = embeddingModelName;
     }
 
     public String getExtractedText() {

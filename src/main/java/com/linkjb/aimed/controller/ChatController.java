@@ -61,6 +61,9 @@ public class ChatController {
             chatSessionUserBindingService.bindOrValidateOwnership(chatForm.getMemoryId(), currentUser.userId());
         }
         String provider = chatApplicationService.normalizeProvider(chatForm.getModelProvider());
+        // 流式响应结束时可能已经脱离原始请求线程，这里提前锁定本次请求的 traceId，
+        // 让聊天摘要审计日志能稳定回链到 SkyWalking。
+        String requestTraceId = traceIdProvider.currentTraceId();
         long startedAt = System.nanoTime();
         return chatApplicationService.chat(chatForm.getMemoryId(), chatForm.getMessage(), provider)
                 .doFinally(signalType -> auditLogService.recordChatSummary(
@@ -70,7 +73,7 @@ public class ChatController {
                         provider,
                         (System.nanoTime() - startedAt) / 1_000_000,
                         false,
-                        traceIdProvider.currentTraceId()
+                        requestTraceId
                 ));
     }
 
@@ -87,6 +90,8 @@ public class ChatController {
             chatSessionUserBindingService.bindOrValidateOwnership(memoryId, currentUser.userId());
         }
         String provider = chatApplicationService.normalizeProvider(modelProvider);
+        // 附件问答同样需要在进入控制器时固定 traceId，避免 doFinally 阶段丢链路。
+        String requestTraceId = traceIdProvider.currentTraceId();
         long startedAt = System.nanoTime();
         return chatApplicationService.chatWithFiles(memoryId, message, provider, files)
                 .doFinally(signalType -> auditLogService.recordChatSummary(
@@ -96,7 +101,7 @@ public class ChatController {
                         provider,
                         (System.nanoTime() - startedAt) / 1_000_000,
                         files != null && files.length > 0,
-                        traceIdProvider.currentTraceId()
+                        requestTraceId
                 ));
     }
 }

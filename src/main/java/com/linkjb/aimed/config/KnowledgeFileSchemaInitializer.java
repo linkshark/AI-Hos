@@ -32,6 +32,7 @@ public class KnowledgeFileSchemaInitializer {
                   progress_percent INT NOT NULL DEFAULT 0,
                   current_batch INT NOT NULL DEFAULT 0,
                   total_batches INT NOT NULL DEFAULT 0,
+                  embedding_model_name VARCHAR(128) DEFAULT NULL,
                   extracted_text LONGTEXT DEFAULT NULL,
                   extracted_characters INT NOT NULL DEFAULT 0,
                   chunk_count INT NOT NULL DEFAULT 0,
@@ -52,8 +53,7 @@ public class KnowledgeFileSchemaInitializer {
                   content MEDIUMTEXT NOT NULL,
                   preview VARCHAR(255) DEFAULT NULL,
                   character_count INT NOT NULL DEFAULT 0,
-                  local_embedding MEDIUMTEXT DEFAULT NULL,
-                  online_embedding MEDIUMTEXT DEFAULT NULL,
+                  embedding MEDIUMTEXT DEFAULT NULL,
                   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                   PRIMARY KEY (id),
@@ -64,7 +64,11 @@ public class KnowledgeFileSchemaInitializer {
         addColumnIfMissing("progress_percent", "ALTER TABLE knowledge_file_status ADD COLUMN progress_percent INT NOT NULL DEFAULT 0");
         addColumnIfMissing("current_batch", "ALTER TABLE knowledge_file_status ADD COLUMN current_batch INT NOT NULL DEFAULT 0");
         addColumnIfMissing("total_batches", "ALTER TABLE knowledge_file_status ADD COLUMN total_batches INT NOT NULL DEFAULT 0");
+        addColumnIfMissing("embedding_model_name", "ALTER TABLE knowledge_file_status ADD COLUMN embedding_model_name VARCHAR(128) DEFAULT NULL");
         addColumnIfMissing("extracted_text", "ALTER TABLE knowledge_file_status ADD COLUMN extracted_text LONGTEXT DEFAULT NULL");
+        addKnowledgeChunkColumnIfMissing("embedding", "ALTER TABLE knowledge_chunk_index ADD COLUMN embedding MEDIUMTEXT DEFAULT NULL");
+        dropKnowledgeChunkColumnIfExists("local_embedding");
+        dropKnowledgeChunkColumnIfExists("online_embedding");
     }
 
     private void addColumnIfMissing(String columnName, String ddl) {
@@ -81,6 +85,40 @@ public class KnowledgeFileSchemaInitializer {
         );
         if (count == null || count == 0) {
             jdbcTemplate.execute(ddl);
+        }
+    }
+
+    private void addKnowledgeChunkColumnIfMissing(String columnName, String ddl) {
+        Integer count = jdbcTemplate.queryForObject(
+                """
+                        SELECT COUNT(*)
+                        FROM information_schema.columns
+                        WHERE table_schema = DATABASE()
+                          AND table_name = 'knowledge_chunk_index'
+                          AND column_name = ?
+                        """,
+                Integer.class,
+                columnName
+        );
+        if (count == null || count == 0) {
+            jdbcTemplate.execute(ddl);
+        }
+    }
+
+    private void dropKnowledgeChunkColumnIfExists(String columnName) {
+        Integer count = jdbcTemplate.queryForObject(
+                """
+                        SELECT COUNT(*)
+                        FROM information_schema.columns
+                        WHERE table_schema = DATABASE()
+                          AND table_name = 'knowledge_chunk_index'
+                          AND column_name = ?
+                        """,
+                Integer.class,
+                columnName
+        );
+        if (count != null && count > 0) {
+            jdbcTemplate.execute("ALTER TABLE knowledge_chunk_index DROP COLUMN " + columnName);
         }
     }
 }

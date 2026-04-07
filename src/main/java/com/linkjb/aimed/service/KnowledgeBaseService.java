@@ -61,6 +61,7 @@ public class KnowledgeBaseService {
     private static final String STATUS_PROCESSING = "PROCESSING";
     private static final String STATUS_READY = "READY";
     private static final String STATUS_FAILED = "FAILED";
+    private static final String STATUS_PENDING_SYNC = "PENDING_SYNC";
     private static final Set<String> DIRECT_TEXT_EXTENSIONS = Set.of("md", "markdown", "txt", "csv");
     private static final Set<String> INLINE_EDITABLE_EXTENSIONS = Set.of("md", "markdown", "txt", "csv", "html", "htm", "xml");
     private static final Set<String> IMAGE_EXTENSIONS = Set.of("png", "jpg", "jpeg", "webp", "gif", "bmp");
@@ -73,16 +74,12 @@ public class KnowledgeBaseService {
             "html", "htm", "xml", "odt", "ods", "odp", "xls", "xlsx", "ppt", "pptx"
     ));
     private static final Set<String> CHAT_ATTACHMENT_EXTENSIONS = new LinkedHashSet<>();
-
     static {
         CHAT_ATTACHMENT_EXTENSIONS.addAll(SUPPORTED_EXTENSIONS);
         CHAT_ATTACHMENT_EXTENSIONS.addAll(IMAGE_EXTENSIONS);
     }
-
-    private final EmbeddingStore<TextSegment> localEmbeddingStore;
-    private final EmbeddingStore<TextSegment> onlineEmbeddingStore;
-    private final EmbeddingModel localEmbeddingModel;
-    private final EmbeddingModel onlineEmbeddingModel;
+    private final EmbeddingStore<TextSegment> embeddingStore;
+    private final EmbeddingModel embeddingModel;
     private final Path storageDirectory;
     private final TaskExecutor knowledgeBootstrapExecutor;
     private final TaskExecutor knowledgeIngestionExecutor;
@@ -93,23 +90,22 @@ public class KnowledgeBaseService {
     private final Set<String> ingestedHashes = ConcurrentHashMap.newKeySet();
     private final Map<String, KnowledgeDocumentRecord> knowledgeRecords = new ConcurrentHashMap<>();
     private final Object embeddingStoreMonitor = new Object();
+    // 统一 embedding 模型后，知识恢复和上传共用同一台 Ollama；串行化可避免 CPU 模型被并发压垮。
+    private final Object embeddingExecutionMonitor = new Object();
     private final int defaultChunkSize;
     private final int defaultChunkOverlap;
     private final int maxChunkSize;
     private final int maxSegmentsPerDocument;
     private final int embeddingBatchSize;
-    private final int onlineEmbeddingBatchSize;
-    private final boolean localEmbeddingEnabled;
-    private final boolean onlineEmbeddingEnabled;
+    private final String embeddingModelName;
+    private final boolean embeddingBuildEnabled;
 
     private final DocumentParser textParser = new TextDocumentParser();
     private final DocumentParser pdfParser = new ApachePdfBoxDocumentParser();
     private final DocumentParser tikaParser = new ApacheTikaDocumentParser();
 
-    public KnowledgeBaseService(@Qualifier("localEmbeddingStore") EmbeddingStore<TextSegment> localEmbeddingStore,
-                                @Qualifier("onlineEmbeddingStore") EmbeddingStore<TextSegment> onlineEmbeddingStore,
-                                @Qualifier("localEmbeddingModel") EmbeddingModel localEmbeddingModel,
-                                @Qualifier("onlineEmbeddingModel") EmbeddingModel onlineEmbeddingModel,
+    public KnowledgeBaseService(@Qualifier("knowledgeEmbeddingStore") EmbeddingStore<TextSegment> embeddingStore,
+                                @Qualifier("knowledgeEmbeddingModel") EmbeddingModel embeddingModel,
                                 @Qualifier("knowledgeBootstrapExecutor") TaskExecutor knowledgeBootstrapExecutor,
                                 @Qualifier("knowledgeIngestionExecutor") TaskExecutor knowledgeIngestionExecutor,
                                 KnowledgeProcessingNotifier knowledgeProcessingNotifier,
@@ -121,14 +117,11 @@ public class KnowledgeBaseService {
                                 @Value("${app.knowledge-base.max-chunk-size:4000}") int maxChunkSize,
                                 @Value("${app.knowledge-base.max-segments-per-document:1200}") int maxSegmentsPerDocument,
                                 @Value("${app.embedding.batch-size:24}") int embeddingBatchSize,
-                                @Value("${app.online-embedding.batch-size:10}") int onlineEmbeddingBatchSize,
-                                @Value("${app.embedding.local-enabled:true}") boolean localEmbeddingEnabled,
-                                @Value("${app.embedding.online-enabled:false}") boolean onlineEmbeddingEnabled,
+                                @Value("${app.embedding.model-name:bge-m3:latest}") String embeddingModelName,
+                                @Value("${app.knowledge-base.embedding-build-enabled:true}") boolean embeddingBuildEnabled,
                                 @Value("${app.knowledge-base.storage-dir:data/knowledge-base}") String storageDir) {
-        this.localEmbeddingStore = localEmbeddingStore;
-        this.onlineEmbeddingStore = onlineEmbeddingStore;
-        this.localEmbeddingModel = localEmbeddingModel;
-        this.onlineEmbeddingModel = onlineEmbeddingModel;
+        this.embeddingStore = embeddingStore;
+        this.embeddingModel = embeddingModel;
         this.knowledgeBootstrapExecutor = knowledgeBootstrapExecutor;
         this.knowledgeIngestionExecutor = knowledgeIngestionExecutor;
         this.knowledgeProcessingNotifier = knowledgeProcessingNotifier;
@@ -140,9 +133,8 @@ public class KnowledgeBaseService {
         this.maxChunkSize = Math.max(this.defaultChunkSize, maxChunkSize);
         this.maxSegmentsPerDocument = Math.max(50, maxSegmentsPerDocument);
         this.embeddingBatchSize = Math.max(1, embeddingBatchSize);
-        this.onlineEmbeddingBatchSize = Math.max(1, onlineEmbeddingBatchSize);
-        this.localEmbeddingEnabled = localEmbeddingEnabled;
-        this.onlineEmbeddingEnabled = onlineEmbeddingEnabled;
+        this.embeddingModelName = embeddingModelName;
+        this.embeddingBuildEnabled = embeddingBuildEnabled;
         this.storageDirectory = Path.of(storageDir).toAbsolutePath().normalize();
     }
 
@@ -160,14 +152,13 @@ public class KnowledgeBaseService {
         ensureStorageDirectoryExists();
         synchronized (this) {
             synchronized (embeddingStoreMonitor) {
-                localEmbeddingStore.removeAll();
-                onlineEmbeddingStore.removeAll();
+                embeddingStore.removeAll();
             }
             ingestedHashes.clear();
             knowledgeRecords.clear();
         }
 
-        // 重启后优先从数据库恢复切片和向量，只有缺失向量时才补算，避免重复消耗在线 embedding。
+        // 重启后优先从数据库恢复切片和向量；线上只读节点不会在这里补算 embedding。
         Set<String> discoveredHashes = ConcurrentHashMap.newKeySet();
         PathMatchingResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
         Resource[] resources = resolver.getResources("classpath:knowledge/*");
@@ -480,12 +471,22 @@ public class KnowledgeBaseService {
                     storedFile
             );
             item.setStoredFilename(storedFilename);
-            item.setStatus("QUEUED");
-            item.setMessage("文件已上传，正在后台解析并构建 RAG 切分");
+            if (embeddingBuildEnabled) {
+                item.setStatus("QUEUED");
+                item.setMessage("文件已上传，正在后台解析并构建 RAG 切分");
+            } else {
+                item.setStatus("SYNC_REQUIRED");
+                item.setMessage("文件已上传，但当前节点不构建 embedding，请在本地完成知识构建后重新部署同步");
+            }
             response.setAccepted(response.getAccepted() + 1);
-            log.info("knowledge.upload.queued hash={} file={} size={} extension={}", hash, originalFilename, size, extension);
-            // 上传接口只负责落盘和入队，解析、切分、embedding 全部在后台线程池完成。
-            scheduleKnowledgeProcessing(hash, storedFilename, originalFilename, extension, size, storedFile);
+            log.info("knowledge.upload.queued hash={} file={} size={} extension={} embeddingBuildEnabled={}",
+                    hash, originalFilename, size, extension, embeddingBuildEnabled);
+            if (embeddingBuildEnabled) {
+                // 上传接口只负责落盘和入队，解析、切分、embedding 全部在后台线程池完成。
+                scheduleKnowledgeProcessing(hash, storedFilename, originalFilename, extension, size, storedFile);
+            } else {
+                updateKnowledgeStatus(hash, STATUS_PENDING_SYNC, "文件已上传，等待本地构建 embedding 后同步", 0, 0, 0);
+            }
         } finally {
             Files.deleteIfExists(tempFile);
         }
@@ -511,6 +512,21 @@ public class KnowledgeBaseService {
         }
 
         if (restorePersistedKnowledge(hash, null)) {
+            return;
+        }
+        if (!embeddingBuildEnabled) {
+            registerPendingSyncKnowledgeRecord(
+                    hash,
+                    filename,
+                    filename,
+                    "bundled",
+                    extension,
+                    safeContentLength(resource),
+                    false,
+                    false,
+                    null,
+                    "当前节点仅读知识索引，等待本地构建 embedding 后同步"
+            );
             return;
         }
 
@@ -545,6 +561,21 @@ public class KnowledgeBaseService {
         }
         String originalFilename = stripHashPrefix(storedFile.getFileName().toString());
         if (restorePersistedKnowledge(hash, storedFile)) {
+            return;
+        }
+        if (!embeddingBuildEnabled) {
+            registerPendingSyncKnowledgeRecord(
+                    hash,
+                    storedFile.getFileName().toString(),
+                    originalFilename,
+                    "uploaded",
+                    getExtension(originalFilename),
+                    Files.size(storedFile),
+                    isEditableExtension(getExtension(originalFilename)),
+                    true,
+                    storedFile,
+                    "当前节点仅读知识索引，等待本地构建 embedding 后同步"
+            );
             return;
         }
         ParsedKnowledge parsedKnowledge = parseFile(storedFile, originalFilename, hash);
@@ -643,13 +674,11 @@ public class KnowledgeBaseService {
             segmentIds.add(hash + "-segment-" + (i + 1));
         }
 
-        int localBatchCount = localEmbeddingEnabled ? calculateBatchCount(segments.size(), resolveBatchSize(localEmbeddingModel)) : 0;
-        int onlineBatchCount = onlineEmbeddingEnabled ? calculateBatchCount(segments.size(), resolveBatchSize(onlineEmbeddingModel)) : 0;
-        int effectiveTotalBatches = Math.max(totalBatches, localBatchCount + onlineBatchCount);
+        int stageBatchCount = calculateBatchCount(segments.size(), embeddingBatchSize);
+        int effectiveTotalBatches = Math.max(totalBatches, stageBatchCount);
 
-        List<Embedding> localEmbeddings = List.of();
-        List<Embedding> onlineEmbeddings = List.of();
-        List<KnowledgeChunkIndex> chunkIndexes = buildChunkIndexes(hash, segments, List.of(), List.of());
+        List<Embedding> embeddings = List.of();
+        List<KnowledgeChunkIndex> chunkIndexes = buildChunkIndexes(hash, segments, List.of());
         KnowledgeDocumentRecord initialRecord = new KnowledgeDocumentRecord(
                 fileName,
                 originalFilename,
@@ -673,22 +702,19 @@ public class KnowledgeBaseService {
         knowledgeRecords.put(hash, initialRecord);
         saveKnowledgeStatus(initialRecord);
         knowledgeChunkIndexService.replaceAll(hash, chunkIndexes);
-        synchronized (embeddingStoreMonitor) {
-            int batchOffset = 0;
-            if (localEmbeddingEnabled) {
-                localEmbeddings = embedSegmentsInBatches(hash, segments, batchOffset, effectiveTotalBatches, "本地向量索引", localEmbeddingModel);
-                localEmbeddingStore.addAll(segmentIds, localEmbeddings, segments);
-                batchOffset += localBatchCount;
+        if (embeddingBuildEnabled) {
+            synchronized (embeddingExecutionMonitor) {
+                synchronized (embeddingStoreMonitor) {
+                    embeddings = embedSegmentsInBatches(hash, segments, 0, effectiveTotalBatches, "知识向量索引", embeddingModel);
+                    embeddingStore.addAll(segmentIds, embeddings, segments);
+                }
             }
-            if (onlineEmbeddingEnabled) {
-                onlineEmbeddings = embedSegmentsInBatches(hash, segments, batchOffset, effectiveTotalBatches, "在线向量索引", onlineEmbeddingModel);
-                onlineEmbeddingStore.addAll(segmentIds, onlineEmbeddings, segments);
-            }
+        } else {
+            processingStatus = STATUS_PENDING_SYNC;
+            statusMessage = "切分已完成，等待本地构建 embedding 后同步";
         }
-        if (localEmbeddingEnabled || onlineEmbeddingEnabled) {
-            chunkIndexes = buildChunkIndexes(hash, segments, localEmbeddings, onlineEmbeddings);
-            knowledgeChunkIndexService.replaceAll(hash, chunkIndexes);
-        }
+        chunkIndexes = buildChunkIndexes(hash, segments, embeddings);
+        knowledgeChunkIndexService.replaceAll(hash, chunkIndexes);
         KnowledgeDocumentRecord record = new KnowledgeDocumentRecord(
                 fileName,
                 originalFilename,
@@ -740,6 +766,40 @@ public class KnowledgeBaseService {
                 List.of(),
                 storagePath
         );
+        knowledgeRecords.put(hash, record);
+        saveKnowledgeStatus(record);
+    }
+
+    private void registerPendingSyncKnowledgeRecord(String hash,
+                                                    String fileName,
+                                                    String originalFilename,
+                                                    String source,
+                                                    String extension,
+                                                    long size,
+                                                    boolean editable,
+                                                    boolean deletable,
+                                                    Path storagePath,
+                                                    String statusMessage) {
+        KnowledgeDocumentRecord record = new KnowledgeDocumentRecord(
+                fileName,
+                originalFilename,
+                hash,
+                source,
+                null,
+                extension,
+                size,
+                editable,
+                deletable,
+                STATUS_PENDING_SYNC,
+                statusMessage,
+                0,
+                0,
+                0,
+                "",
+                List.of(),
+                storagePath
+        );
+        ingestedHashes.add(hash);
         knowledgeRecords.put(hash, record);
         saveKnowledgeStatus(record);
     }
@@ -950,7 +1010,7 @@ public class KnowledgeBaseService {
             knowledgeFileStatusService.deleteByHash(status.getHash());
         }
     }
-
+    //恢复持久化之后的数据
     private boolean restorePersistedKnowledge(String hash, Path storagePath) {
         KnowledgeFileStatus status = knowledgeFileStatusService.findByHash(hash);
         List<KnowledgeChunkIndex> chunkIndexes = knowledgeChunkIndexService.listByHash(hash);
@@ -962,37 +1022,58 @@ public class KnowledgeBaseService {
         List<String> segmentIds = chunkIndexes.stream()
                 .map(KnowledgeChunkIndex::getSegmentId)
                 .toList();
-        boolean localMissing = localEmbeddingEnabled && hasMissingEmbedding(chunkIndexes, true);
-        boolean onlineMissing = onlineEmbeddingEnabled && hasMissingEmbedding(chunkIndexes, false);
-        // 只有在当前启用的向量提供方缺数据时才回补，避免每次启动都重新请求模型。
-        if (localMissing || onlineMissing) {
-            int batchOffset = 0;
-            int totalBatches = 0;
-            if (localMissing) {
-                totalBatches += calculateBatchCount(segments.size(), resolveBatchSize(localEmbeddingModel));
+        boolean embeddingCompatible = isEmbeddingModelCompatible(status);
+        boolean embeddingMissing = hasMissingEmbedding(chunkIndexes);
+        boolean requireRebuild = !embeddingCompatible || embeddingMissing;
+        // 只有“文件内容 hash 未变 + embedding 完整 + 模型名一致”时才直接复用，避免不同模型向量被误用。
+        if (requireRebuild) {
+            if (!embeddingBuildEnabled) {
+                status.setProcessingStatus(STATUS_PENDING_SYNC);
+                status.setStatusMessage("当前节点仅读知识索引，等待本地构建 embedding 后同步");
+                status.setProgressPercent(0);
+                status.setEmbeddingModelName(null);
+                knowledgeFileStatusService.saveOrUpdate(status);
+                KnowledgeDocumentRecord record = new KnowledgeDocumentRecord(
+                        status.getFileName(),
+                        status.getOriginalFilename(),
+                        status.getHash(),
+                        status.getSource(),
+                        status.getParser(),
+                        status.getExtension(),
+                        status.getSize() == null ? 0L : status.getSize(),
+                        Boolean.TRUE.equals(status.getEditable()),
+                        Boolean.TRUE.equals(status.getDeletable()),
+                        STATUS_PENDING_SYNC,
+                        "当前节点仅读知识索引，等待本地构建 embedding 后同步",
+                        0,
+                        status.getCurrentBatch() == null ? 0 : status.getCurrentBatch(),
+                        status.getTotalBatches() == null ? 0 : status.getTotalBatches(),
+                        status.getExtractedText() == null ? "" : status.getExtractedText(),
+                        toChunkInfos(chunkIndexes),
+                        storagePath
+                );
+                knowledgeRecords.put(hash, record);
+                ingestedHashes.add(hash);
+                return true;
             }
-            if (onlineMissing) {
-                totalBatches += calculateBatchCount(segments.size(), resolveBatchSize(onlineEmbeddingModel));
+            int totalBatches = calculateBatchCount(segments.size(), embeddingBatchSize);
+            List<Embedding> embeddings;
+            synchronized (embeddingExecutionMonitor) {
+                embeddings = embedSegmentsInBatches(hash, segments, 0, totalBatches, "知识向量索引", embeddingModel);
             }
-            if (localMissing) {
-                List<Embedding> localEmbeddings = embedSegmentsInBatches(hash, segments, batchOffset, totalBatches, "本地向量索引", localEmbeddingModel);
-                applyEmbeddings(chunkIndexes, localEmbeddings, true);
-                batchOffset += calculateBatchCount(segments.size(), resolveBatchSize(localEmbeddingModel));
-            }
-            if (onlineMissing) {
-                List<Embedding> onlineEmbeddings = embedSegmentsInBatches(hash, segments, batchOffset, totalBatches, "在线向量索引", onlineEmbeddingModel);
-                applyEmbeddings(chunkIndexes, onlineEmbeddings, false);
-            }
+            applyEmbeddings(chunkIndexes, embeddings);
             knowledgeChunkIndexService.replaceAll(hash, chunkIndexes);
+            status.setProcessingStatus(STATUS_READY);
+            status.setStatusMessage(buildQualityMessage(status.getExtractedCharacters() == null ? 0 : status.getExtractedCharacters()));
+            status.setProgressPercent(100);
+            status.setCurrentBatch(0);
+            status.setTotalBatches(totalBatches);
+            status.setEmbeddingModelName(embeddingModelName);
+            knowledgeFileStatusService.saveOrUpdate(status);
         }
 
         synchronized (embeddingStoreMonitor) {
-            if (localEmbeddingEnabled) {
-                restoreEmbeddingsToStore(segmentIds, segments, chunkIndexes, true);
-            }
-            if (onlineEmbeddingEnabled) {
-                restoreEmbeddingsToStore(segmentIds, segments, chunkIndexes, false);
-            }
+            restoreEmbeddingsToStore(segmentIds, segments, chunkIndexes);
         }
 
         KnowledgeDocumentRecord record = new KnowledgeDocumentRecord(
@@ -1019,23 +1100,18 @@ public class KnowledgeBaseService {
         return true;
     }
 
-    private boolean hasMissingEmbedding(List<KnowledgeChunkIndex> chunkIndexes, boolean localStore) {
+    private boolean hasMissingEmbedding(List<KnowledgeChunkIndex> chunkIndexes) {
         for (KnowledgeChunkIndex chunkIndex : chunkIndexes) {
-            String serialized = localStore ? chunkIndex.getLocalEmbedding() : chunkIndex.getOnlineEmbedding();
-            if (!StringUtils.hasText(serialized)) {
+            if (!StringUtils.hasText(chunkIndex.getEmbedding())) {
                 return true;
             }
         }
         return false;
     }
 
-    private void applyEmbeddings(List<KnowledgeChunkIndex> chunkIndexes, List<Embedding> embeddings, boolean localStore) {
+    private void applyEmbeddings(List<KnowledgeChunkIndex> chunkIndexes, List<Embedding> embeddings) {
         for (int i = 0; i < chunkIndexes.size() && i < embeddings.size(); i++) {
-            if (localStore) {
-                chunkIndexes.get(i).setLocalEmbedding(serializeEmbedding(embeddings.get(i)));
-            } else {
-                chunkIndexes.get(i).setOnlineEmbedding(serializeEmbedding(embeddings.get(i)));
-            }
+            chunkIndexes.get(i).setEmbedding(serializeEmbedding(embeddings.get(i)));
         }
     }
 
@@ -1068,8 +1144,7 @@ public class KnowledgeBaseService {
 
     private List<KnowledgeChunkIndex> buildChunkIndexes(String hash,
                                                         List<TextSegment> segments,
-                                                        List<Embedding> localEmbeddings,
-                                                        List<Embedding> onlineEmbeddings) {
+                                                        List<Embedding> embeddings) {
         List<KnowledgeChunkIndex> indexes = new ArrayList<>(segments.size());
         for (int i = 0; i < segments.size(); i++) {
             TextSegment segment = segments.get(i);
@@ -1080,11 +1155,8 @@ public class KnowledgeBaseService {
             index.setContent(segment.text());
             index.setPreview(buildPreview(segment.text()));
             index.setCharacterCount(segment.text().length());
-            if (i < localEmbeddings.size()) {
-                index.setLocalEmbedding(serializeEmbedding(localEmbeddings.get(i)));
-            }
-            if (i < onlineEmbeddings.size()) {
-                index.setOnlineEmbedding(serializeEmbedding(onlineEmbeddings.get(i)));
+            if (i < embeddings.size()) {
+                index.setEmbedding(serializeEmbedding(embeddings.get(i)));
             }
             indexes.add(index);
         }
@@ -1101,13 +1173,12 @@ public class KnowledgeBaseService {
 
     private void restoreEmbeddingsToStore(List<String> segmentIds,
                                           List<TextSegment> segments,
-                                          List<KnowledgeChunkIndex> chunkIndexes,
-                                          boolean localStore) {
+                                          List<KnowledgeChunkIndex> chunkIndexes) {
         List<Embedding> embeddings = new ArrayList<>(chunkIndexes.size());
         List<TextSegment> availableSegments = new ArrayList<>(chunkIndexes.size());
         List<String> availableSegmentIds = new ArrayList<>(chunkIndexes.size());
         for (int i = 0; i < chunkIndexes.size(); i++) {
-            String serialized = localStore ? chunkIndexes.get(i).getLocalEmbedding() : chunkIndexes.get(i).getOnlineEmbedding();
+            String serialized = chunkIndexes.get(i).getEmbedding();
             if (!StringUtils.hasText(serialized)) {
                 continue;
             }
@@ -1118,11 +1189,7 @@ public class KnowledgeBaseService {
         if (embeddings.isEmpty()) {
             return;
         }
-        if (localStore) {
-            localEmbeddingStore.addAll(availableSegmentIds, embeddings, availableSegments);
-        } else {
-            onlineEmbeddingStore.addAll(availableSegmentIds, embeddings, availableSegments);
-        }
+        embeddingStore.addAll(availableSegmentIds, embeddings, availableSegments);
     }
 
     private String serializeEmbedding(Embedding embedding) {
@@ -1224,6 +1291,7 @@ public class KnowledgeBaseService {
 
     private List<TextSegment> splitDocument(Document document) {
         int chunkSize = defaultChunkSize;
+        //默认重叠块(150)与 默认块大小 chunkSize(1000/3)取最小值
         int chunkOverlap = Math.min(defaultChunkOverlap, Math.max(0, chunkSize / 3));
         List<TextSegment> segments = createSplitter(chunkSize, chunkOverlap).split(document);
         // 对超大文档逐步放大 chunk，优先把切片数量控制在可接受范围内，避免 embedding 爆量。
@@ -1242,7 +1310,7 @@ public class KnowledgeBaseService {
     private DocumentSplitter createSplitter(int chunkSize, int chunkOverlap) {
         return DocumentSplitters.recursive(chunkSize, chunkOverlap);
     }
-
+        //
     private List<dev.langchain4j.data.embedding.Embedding> embedSegmentsInBatches(String hash,
                                                                                   List<TextSegment> segments,
                                                                                   int batchOffset,
@@ -1252,7 +1320,7 @@ public class KnowledgeBaseService {
         List<dev.langchain4j.data.embedding.Embedding> embeddings = new ArrayList<>(segments.size());
         int batchSize = resolveBatchSize(embeddingModel);
         int stageBatchCount = calculateBatchCount(segments.size(), batchSize);
-        // 分批 embedding 是为了限制单次请求体积，并让前端能看到真实批次进度。
+        // 分批 embedding 是为了限制单次请求体积，并让前端能看到真实批次进度(websocket 通知进度)
         for (int batchIndex = 0; batchIndex < stageBatchCount; batchIndex++) {
             int start = batchIndex * batchSize;
             int end = Math.min(start + batchSize, segments.size());
@@ -1268,15 +1336,16 @@ public class KnowledgeBaseService {
                     progressPercent,
                     visibleBatchIndex,
                     totalBatches);
-            embeddings.addAll(embeddingModel.embedAll(batch).content());
+            List<Embedding> batchEmbeddings = embeddingModel.embedAll(batch).content();
+            if (batchEmbeddings.size() != batch.size()) {
+                throw new IllegalStateException("Embedding 返回数量异常，期望 " + batch.size() + " 实际 " + batchEmbeddings.size());
+            }
+            embeddings.addAll(batchEmbeddings);
         }
         return embeddings;
     }
 
     private int resolveBatchSize(EmbeddingModel embeddingModel) {
-        if (embeddingModel == onlineEmbeddingModel) {
-            return onlineEmbeddingBatchSize;
-        }
         return embeddingBatchSize;
     }
 
@@ -1338,10 +1407,15 @@ public class KnowledgeBaseService {
         status.setProgressPercent(record.progressPercent());
         status.setCurrentBatch(record.currentBatch());
         status.setTotalBatches(record.totalBatches());
+        status.setEmbeddingModelName(STATUS_READY.equals(record.processingStatus()) ? embeddingModelName : null);
         status.setExtractedText(record.extractedText());
         status.setExtractedCharacters(record.extractedText() == null ? 0 : record.extractedText().length());
         status.setChunkCount(record.chunks() == null ? 0 : record.chunks().size());
         knowledgeFileStatusService.saveOrUpdate(status);
+    }
+
+    private boolean isEmbeddingModelCompatible(KnowledgeFileStatus status) {
+        return status != null && embeddingModelName.equals(status.getEmbeddingModelName());
     }
 
     private record ParsedKnowledge(Document document, String parserName) {

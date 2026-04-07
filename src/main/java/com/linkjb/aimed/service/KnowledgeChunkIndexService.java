@@ -64,8 +64,8 @@ public class KnowledgeChunkIndexService {
             List<KnowledgeChunkIndex> batch = chunks.subList(start, end);
             jdbcTemplate.batchUpdate("""
                             INSERT INTO knowledge_chunk_index
-                            (file_hash, segment_id, segment_index, content, preview, character_count, local_embedding, online_embedding)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            (file_hash, segment_id, segment_index, content, preview, character_count, embedding)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
                             """,
                     new BatchPreparedStatementSetter() {
                         @Override
@@ -77,8 +77,7 @@ public class KnowledgeChunkIndexService {
                             ps.setString(4, chunk.getContent());
                             ps.setString(5, chunk.getPreview());
                             ps.setInt(6, chunk.getCharacterCount() == null ? 0 : chunk.getCharacterCount());
-                            ps.setString(7, chunk.getLocalEmbedding());
-                            ps.setString(8, chunk.getOnlineEmbedding());
+                            ps.setString(7, chunk.getEmbedding());
                         }
 
                         @Override

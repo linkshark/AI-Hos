@@ -11,15 +11,9 @@ import org.springframework.context.annotation.Configuration;
 
 @Configuration
 public class EmbeddingStoreConfig {
-    @Bean(name = "localEmbeddingStore")
-    public EmbeddingStore<TextSegment> localEmbeddingStore() {
-        // 本地模式使用独立的内存向量库，避免与在线检索结果串线。
-        return new InMemoryEmbeddingStore<>();
-    }
-
-    @Bean(name = "onlineEmbeddingStore")
-    public EmbeddingStore<TextSegment> onlineEmbeddingStore() {
-        // 在线模式维护独立的向量索引，配合在线 embedding 模型检索。
+    @Bean(name = "knowledgeEmbeddingStore")
+    public EmbeddingStore<TextSegment> knowledgeEmbeddingStore() {
+        // 向量会持久化到 MySQL 分片表，进程内只保留统一的运行时检索索引。
         return new InMemoryEmbeddingStore<>();
     }
 

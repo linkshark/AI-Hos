@@ -15,7 +15,8 @@ services:
         -Dskywalking.agent.instance_name=aihos-online
         -Dskywalking.collector.backend_service=aimed-skywalking-oap:11800
     volumes:
-      - aimed-online-knowledge-data:/app/data/knowledge-base
+      # 线上知识文件直接映射到项目目录，确保本地仓库与服务器部署内容保持同步。
+      - ./data/knowledge-base:/app/data/knowledge-base
       - ./config:/app/config:ro
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
@@ -40,9 +41,6 @@ services:
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
-volumes:
-  aimed-online-knowledge-data:
-
 networks:
   aimed-observability:
     external: true

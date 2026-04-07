@@ -16,8 +16,7 @@ public class KnowledgeChunkIndex {
     private String content;
     private String preview;
     private Integer characterCount;
-    private String localEmbedding;
-    private String onlineEmbedding;
+    private String embedding;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
@@ -77,20 +76,12 @@ public class KnowledgeChunkIndex {
         this.characterCount = characterCount;
     }
 
-    public String getLocalEmbedding() {
-        return localEmbedding;
+    public String getEmbedding() {
+        return embedding;
     }
 
-    public void setLocalEmbedding(String localEmbedding) {
-        this.localEmbedding = localEmbedding;
-    }
-
-    public String getOnlineEmbedding() {
-        return onlineEmbedding;
-    }
-
-    public void setOnlineEmbedding(String onlineEmbedding) {
-        this.onlineEmbedding = onlineEmbedding;
+    public void setEmbedding(String embedding) {
+        this.embedding = embedding;
     }
 
     public LocalDateTime getCreatedAt() {

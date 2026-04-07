@@ -1,8 +1,12 @@
 # syntax=docker/dockerfile:1.7
 
-FROM maven:3.9.9-eclipse-temurin-21 AS builder
+FROM eclipse-temurin:21-jdk AS builder
 
 WORKDIR /workspace
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends maven \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY pom.xml .
 RUN --mount=type=cache,target=/root/.m2 \

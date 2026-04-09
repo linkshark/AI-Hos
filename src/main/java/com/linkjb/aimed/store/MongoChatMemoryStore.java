@@ -42,24 +42,24 @@ public class MongoChatMemoryStore implements ChatMemoryStore {
         String normalizedMemoryId = normalizeMemoryId(memoryId);
         Document chatMessages = collection.find(Filters.eq("memoryId", normalizedMemoryId)).first();
         if (chatMessages == null) {
-            log.debug("chat.memory.load memoryId={} size=0", normalizedMemoryId);
+            log.debug("对话记忆获取 memoryId={} size=0", normalizedMemoryId);
             return new LinkedList<>();
         }
 
         String content = chatMessages.getString("content");
         if (!StringUtils.hasText(content)) {
-            log.debug("chat.memory.load memoryId={} size=0", normalizedMemoryId);
+            log.debug("对话记忆获取 memoryId={} size=0", normalizedMemoryId);
             return new LinkedList<>();
         }
         List<ChatMessage> messages = ChatMessageDeserializer.messagesFromJson(content);
-        log.debug("chat.memory.load memoryId={} size={}", normalizedMemoryId, messages.size());
+        log.debug("对话记忆获取 memoryId={} size={}", normalizedMemoryId, messages.size());
         return messages;
     }
 
     @Override
     public void updateMessages(Object memoryId, List<ChatMessage> messages) {
         String normalizedMemoryId = normalizeMemoryId(memoryId);
-        log.debug("chat.memory.save memoryId={} size={}", normalizedMemoryId, messages == null ? 0 : messages.size());
+        log.debug("对话记忆保存更新 memoryId={} size={}", normalizedMemoryId, messages == null ? 0 : messages.size());
         collection.updateOne(
                 Filters.eq("memoryId", normalizedMemoryId),
                 Updates.combine(
@@ -73,7 +73,7 @@ public class MongoChatMemoryStore implements ChatMemoryStore {
     @Override
     public void deleteMessages(Object memoryId) {
         String normalizedMemoryId = normalizeMemoryId(memoryId);
-        log.debug("chat.memory.delete memoryId={}", normalizedMemoryId);
+        log.debug("对话记忆删除 memoryId={}", normalizedMemoryId);
         collection.deleteOne(Filters.eq("memoryId", normalizedMemoryId));
     }
 

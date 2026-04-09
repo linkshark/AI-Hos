@@ -20,6 +20,13 @@ public class AuditLog {
     private String traceId;
     private Long memoryId;
     private String provider;
+    private String queryType;
+    private Integer retrievedCountKeyword;
+    private Integer retrievedCountVector;
+    private Integer mergedCount;
+    private Integer finalCitationCount;
+    private Boolean emptyRecall;
+    private String topDocHashes;
     private Long durationMs;
     private Boolean hasAttachments;
     private LocalDateTime createdAt;
@@ -102,6 +109,62 @@ public class AuditLog {
 
     public void setProvider(String provider) {
         this.provider = provider;
+    }
+
+    public String getQueryType() {
+        return queryType;
+    }
+
+    public void setQueryType(String queryType) {
+        this.queryType = queryType;
+    }
+
+    public Integer getRetrievedCountKeyword() {
+        return retrievedCountKeyword;
+    }
+
+    public void setRetrievedCountKeyword(Integer retrievedCountKeyword) {
+        this.retrievedCountKeyword = retrievedCountKeyword;
+    }
+
+    public Integer getRetrievedCountVector() {
+        return retrievedCountVector;
+    }
+
+    public void setRetrievedCountVector(Integer retrievedCountVector) {
+        this.retrievedCountVector = retrievedCountVector;
+    }
+
+    public Integer getMergedCount() {
+        return mergedCount;
+    }
+
+    public void setMergedCount(Integer mergedCount) {
+        this.mergedCount = mergedCount;
+    }
+
+    public Integer getFinalCitationCount() {
+        return finalCitationCount;
+    }
+
+    public void setFinalCitationCount(Integer finalCitationCount) {
+        this.finalCitationCount = finalCitationCount;
+    }
+
+    public Boolean getEmptyRecall() {
+        return emptyRecall;
+    }
+
+    public void setEmptyRecall(Boolean emptyRecall) {
+        this.emptyRecall = emptyRecall;
+    }
+
+    public String getTopDocHashes() {
+        return topDocHashes;
+    }
+
+    public void setTopDocHashes(String topDocHashes) {
+        this.topDocHashes = topDocHashes;
     }
 
     public Long getDurationMs() {

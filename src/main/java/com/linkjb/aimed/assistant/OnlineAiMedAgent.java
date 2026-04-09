@@ -13,7 +13,7 @@ import static dev.langchain4j.service.spring.AiServiceWiringMode.EXPLICIT;
         streamingChatModel = "onlineStreamingChatModel",
         chatMemoryProvider = "chatMemoryProviderAiMed",
         tools = "appointmentTools",
-        contentRetriever = "contentRetrieverKnowledge"
+        contentRetriever = "contentRetrieverKnowledgeOnline"
 )
 public interface OnlineAiMedAgent {
     @SystemMessage(fromResource = "prompt-templates/aimed-prompt-template.txt")

@@ -55,7 +55,7 @@ public class ChatController {
     @PostMapping(value = "/chat", consumes = MediaType.APPLICATION_JSON_VALUE, produces = "text/stream;charset=utf-8")
     public Flux<String> chat(@Valid @RequestBody ChatForm chatForm,
                              @AuthenticationPrincipal AuthenticatedUser currentUser) {
-        log.info("chat.controller.request type=json memoryId={} provider={} userId={}",
+        log.info("对话请求开始 type=json memoryId={} provider={} userId={}",
                 chatForm.getMemoryId(), chatForm.getModelProvider(), currentUser == null ? null : currentUser.userId());
         if (currentUser != null) {
             chatSessionUserBindingService.bindOrValidateOwnership(chatForm.getMemoryId(), currentUser.userId());
@@ -73,7 +73,8 @@ public class ChatController {
                         provider,
                         (System.nanoTime() - startedAt) / 1_000_000,
                         false,
-                        requestTraceId
+                        requestTraceId,
+                        chatApplicationService.consumeCompletedRetrievalSummary(requestTraceId)
                 ));
     }
 
@@ -101,7 +102,8 @@ public class ChatController {
                         provider,
                         (System.nanoTime() - startedAt) / 1_000_000,
                         files != null && files.length > 0,
-                        requestTraceId
+                        requestTraceId,
+                        chatApplicationService.consumeCompletedRetrievalSummary(requestTraceId)
                 ));
     }
 }

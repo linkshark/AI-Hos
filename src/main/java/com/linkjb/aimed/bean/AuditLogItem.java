@@ -14,6 +14,13 @@ public record AuditLogItem(
         String traceId,
         Long memoryId,
         String provider,
+        String queryType,
+        Integer retrievedCountKeyword,
+        Integer retrievedCountVector,
+        Integer mergedCount,
+        Integer finalCitationCount,
+        Boolean emptyRecall,
+        String topDocHashes,
         Long durationMs,
         Boolean hasAttachments,
         LocalDateTime createdAt

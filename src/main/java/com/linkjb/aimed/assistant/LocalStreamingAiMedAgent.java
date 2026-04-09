@@ -13,7 +13,7 @@ import static dev.langchain4j.service.spring.AiServiceWiringMode.EXPLICIT;
         streamingChatModel = "localStreamingChatModel",
         chatMemoryProvider = "chatMemoryProviderAiMed",
         tools = "appointmentTools",
-        contentRetriever = "contentRetrieverKnowledge"
+        contentRetriever = "contentRetrieverKnowledgeLocal"
 )
 public interface LocalStreamingAiMedAgent {
 

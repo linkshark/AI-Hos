@@ -37,6 +37,9 @@ public class AuditLogService {
     public static final String ACTION_KNOWLEDGE_UPLOAD = "KNOWLEDGE_UPLOAD";
     public static final String ACTION_KNOWLEDGE_UPDATE = "KNOWLEDGE_UPDATE";
     public static final String ACTION_KNOWLEDGE_DELETE = "KNOWLEDGE_DELETE";
+    public static final String ACTION_KNOWLEDGE_PUBLISH = "KNOWLEDGE_PUBLISH";
+    public static final String ACTION_KNOWLEDGE_ARCHIVE = "KNOWLEDGE_ARCHIVE";
+    public static final String ACTION_KNOWLEDGE_REPROCESS = "KNOWLEDGE_REPROCESS";
     public static final String ACTION_CHAT_SUMMARY = "CHAT_SUMMARY";
 
     private final AuditLogMapper auditLogMapper;
@@ -56,7 +59,7 @@ public class AuditLogService {
                                  String actionType,
                                  String targetId,
                                  String summary) {
-        record(actorUserId, actorRole, actionType, TARGET_AUTH, targetId, summary, null, null, null, null, null);
+        record(actorUserId, actorRole, actionType, TARGET_AUTH, targetId, summary, null, null, null, null, null, null);
     }
 
     public void recordAdminAction(Long actorUserId,
@@ -64,7 +67,7 @@ public class AuditLogService {
                                   String actionType,
                                   String targetId,
                                   String summary) {
-        record(actorUserId, actorRole, actionType, TARGET_USER, targetId, summary, null, null, null, null, null);
+        record(actorUserId, actorRole, actionType, TARGET_USER, targetId, summary, null, null, null, null, null, null);
     }
 
     public void recordKnowledgeAction(Long actorUserId,
@@ -72,7 +75,7 @@ public class AuditLogService {
                                       String actionType,
                                       String targetId,
                                       String summary) {
-        record(actorUserId, actorRole, actionType, TARGET_KNOWLEDGE, targetId, summary, null, null, null, null, null);
+        record(actorUserId, actorRole, actionType, TARGET_KNOWLEDGE, targetId, summary, null, null, null, null, null, null);
     }
 
     public void recordChatSummary(Long actorUserId,
@@ -81,10 +84,16 @@ public class AuditLogService {
                                   String provider,
                                   long durationMs,
                                   boolean hasAttachments,
-                                  String traceId) {
+                                  String traceId,
+                                  HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary) {
         String summary = "会话 #" + memoryId + " 使用 " + provider + (hasAttachments ? " 发起附件问答" : " 发起文本问答");
+        if (retrievalSummary != null) {
+            summary += "，关键词 " + retrievalSummary.retrievedCountKeyword()
+                    + " / 向量 " + retrievalSummary.retrievedCountVector()
+                    + " / 引用 " + retrievalSummary.finalHits().size();
+        }
         record(actorUserId, actorRole, ACTION_CHAT_SUMMARY, TARGET_CHAT, String.valueOf(memoryId), summary,
-                traceId, memoryId, provider, durationMs, hasAttachments);
+                traceId, memoryId, provider, durationMs, hasAttachments, retrievalSummary);
     }
 
     public PagedResponse<AuditLogItem> listLogs(int page,
@@ -114,7 +123,11 @@ public class AuditLogService {
                     .or()
                     .like(AuditLog::getTargetId, normalizedKeyword)
                     .or()
-                    .like(AuditLog::getProvider, normalizedKeyword));
+                    .like(AuditLog::getProvider, normalizedKeyword)
+                    .or()
+                    .like(AuditLog::getQueryType, normalizedKeyword)
+                    .or()
+                    .like(AuditLog::getTopDocHashes, normalizedKeyword));
         }
         if (actorUserId != null) {
             wrapper.eq(AuditLog::getActorUserId, actorUserId);
@@ -151,6 +164,13 @@ public class AuditLogService {
                         log.getTraceId(),
                         log.getMemoryId(),
                         log.getProvider(),
+                        log.getQueryType(),
+                        log.getRetrievedCountKeyword(),
+                        log.getRetrievedCountVector(),
+                        log.getMergedCount(),
+                        log.getFinalCitationCount(),
+                        log.getEmptyRecall(),
+                        log.getTopDocHashes(),
                         log.getDurationMs(),
                         log.getHasAttachments(),
                         log.getCreatedAt()
@@ -170,7 +190,8 @@ public class AuditLogService {
                         Long memoryId,
                         String provider,
                         Long durationMs,
-                        Boolean hasAttachments) {
+                        Boolean hasAttachments,
+                        HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary) {
         AuditLog log = new AuditLog();
         log.setActorUserId(actorUserId);
         log.setActorRole(actorRole);
@@ -181,6 +202,21 @@ public class AuditLogService {
         log.setTraceId(StringUtils.hasText(traceId) ? traceId : traceIdProvider.currentTraceId());
         log.setMemoryId(memoryId);
         log.setProvider(provider);
+        if (retrievalSummary != null) {
+            log.setQueryType(retrievalSummary.queryType());
+            log.setRetrievedCountKeyword(retrievalSummary.retrievedCountKeyword());
+            log.setRetrievedCountVector(retrievalSummary.retrievedCountVector());
+            log.setMergedCount(retrievalSummary.mergedCount());
+            log.setFinalCitationCount(retrievalSummary.finalHits().size());
+            log.setEmptyRecall(retrievalSummary.emptyRecall());
+            log.setTopDocHashes(String.join(",",
+                    retrievalSummary.finalHits().stream()
+                            .map(HybridKnowledgeRetrieverService.RetrievedChunk::fileHash)
+                            .filter(StringUtils::hasText)
+                            .distinct()
+                            .limit(5)
+                            .toList()));
+        }
         log.setDurationMs(durationMs);
         log.setHasAttachments(hasAttachments);
         auditLogMapper.insert(log);

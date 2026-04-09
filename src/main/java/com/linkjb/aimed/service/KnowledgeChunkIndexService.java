@@ -10,6 +10,7 @@ import org.springframework.util.StringUtils;
 
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.util.List;
 
 @Service
@@ -57,6 +58,58 @@ public class KnowledgeChunkIndexService {
                 .eq(KnowledgeChunkIndex::getFileHash, hash));
     }
 
+    public void updateStatusByHash(String hash, String status) {
+        if (!StringUtils.hasText(hash)) {
+            return;
+        }
+        KnowledgeChunkIndex update = new KnowledgeChunkIndex();
+        update.setStatus(status);
+        knowledgeChunkIndexMapper.update(update, new LambdaQueryWrapper<KnowledgeChunkIndex>()
+                .eq(KnowledgeChunkIndex::getFileHash, hash));
+    }
+
+    public void updateMetadataByHash(String hash,
+                                     String status,
+                                     String title,
+                                     String docType,
+                                     String department,
+                                     String audience,
+                                     String version,
+                                     Timestamp effectiveAt,
+                                     String doctorName,
+                                     Integer sourcePriority,
+                                     String keywords) {
+        if (!StringUtils.hasText(hash)) {
+            return;
+        }
+        jdbcTemplate.update("""
+                        UPDATE knowledge_chunk_index
+                        SET status = ?,
+                            title = ?,
+                            doc_type = ?,
+                            department = ?,
+                            audience = ?,
+                            version = ?,
+                            effective_at = ?,
+                            doctor_name = ?,
+                            source_priority = ?,
+                            keywords = ?
+                        WHERE file_hash = ?
+                        """,
+                status,
+                title,
+                docType,
+                department,
+                audience,
+                version,
+                effectiveAt,
+                doctorName,
+                sourcePriority == null ? 50 : sourcePriority,
+                keywords,
+                hash
+        );
+    }
+
     private void batchInsert(List<KnowledgeChunkIndex> chunks) {
         final int batchSize = 200;
         for (int start = 0; start < chunks.size(); start += batchSize) {
@@ -64,8 +117,10 @@ public class KnowledgeChunkIndexService {
             List<KnowledgeChunkIndex> batch = chunks.subList(start, end);
             jdbcTemplate.batchUpdate("""
                             INSERT INTO knowledge_chunk_index
-                            (file_hash, segment_id, segment_index, content, preview, character_count, embedding)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            (file_hash, segment_id, segment_index, content, preview, character_count, embedding,
+                             title, doc_type, department, audience, version, effective_at, status, doctor_name,
+                             source_priority, keywords)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                     new BatchPreparedStatementSetter() {
                         @Override
@@ -78,6 +133,16 @@ public class KnowledgeChunkIndexService {
                             ps.setString(5, chunk.getPreview());
                             ps.setInt(6, chunk.getCharacterCount() == null ? 0 : chunk.getCharacterCount());
                             ps.setString(7, chunk.getEmbedding());
+                            ps.setString(8, chunk.getTitle());
+                            ps.setString(9, chunk.getDocType());
+                            ps.setString(10, chunk.getDepartment());
+                            ps.setString(11, chunk.getAudience());
+                            ps.setString(12, chunk.getVersion());
+                            ps.setTimestamp(13, chunk.getEffectiveAt() == null ? null : java.sql.Timestamp.valueOf(chunk.getEffectiveAt()));
+                            ps.setString(14, chunk.getStatus());
+                            ps.setString(15, chunk.getDoctorName());
+                            ps.setInt(16, chunk.getSourcePriority() == null ? 50 : chunk.getSourcePriority());
+                            ps.setString(17, chunk.getKeywords());
                         }
 
                         @Override

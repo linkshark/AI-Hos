@@ -1,6 +1,7 @@
 package com.linkjb.aimed.controller;
 
 import com.linkjb.aimed.bean.KnowledgeDocumentDetail;
+import com.linkjb.aimed.bean.KnowledgeBatchActionRequest;
 import com.linkjb.aimed.bean.KnowledgeFileInfo;
 import com.linkjb.aimed.bean.KnowledgeUpdateRequest;
 import com.linkjb.aimed.bean.KnowledgeUploadResponse;
@@ -23,6 +24,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
 @Tag(name = "Knowledge")
@@ -68,7 +70,7 @@ public class KnowledgeController {
     public KnowledgeDocumentDetail updateKnowledgeFile(@PathVariable("hash") String hash,
                                                        @RequestBody KnowledgeUpdateRequest request,
                                                        @AuthenticationPrincipal AuthenticatedUser currentUser) throws IOException {
-        KnowledgeDocumentDetail detail = knowledgeBaseService.updateKnowledgeContent(hash, request == null ? null : request.getContent());
+        KnowledgeDocumentDetail detail = knowledgeBaseService.updateKnowledgeContent(hash, request == null ? null : request.getContent(), request);
         auditLogService.recordKnowledgeAction(currentUser.userId(), currentUser.role(),
                 AuditLogService.ACTION_KNOWLEDGE_UPDATE,
                 hash,
@@ -85,5 +87,69 @@ public class KnowledgeController {
                 AuditLogService.ACTION_KNOWLEDGE_DELETE,
                 hash,
                 "删除知识文件 " + hash);
+    }
+
+    @Operation(summary = "发布单个知识文件")
+    @PostMapping("/files/{hash}/publish")
+    public KnowledgeDocumentDetail publishKnowledgeFile(@PathVariable("hash") String hash,
+                                                        @AuthenticationPrincipal AuthenticatedUser currentUser) throws IOException {
+        KnowledgeDocumentDetail detail = knowledgeBaseService.publishKnowledge(hash);
+        auditLogService.recordKnowledgeAction(currentUser.userId(), currentUser.role(),
+                AuditLogService.ACTION_KNOWLEDGE_PUBLISH,
+                hash,
+                "发布知识文件 " + hash);
+        return detail;
+    }
+
+    @Operation(summary = "归档单个知识文件")
+    @PostMapping("/files/{hash}/archive")
+    public KnowledgeDocumentDetail archiveKnowledgeFile(@PathVariable("hash") String hash,
+                                                        @AuthenticationPrincipal AuthenticatedUser currentUser) throws IOException {
+        KnowledgeDocumentDetail detail = knowledgeBaseService.archiveKnowledge(hash);
+        auditLogService.recordKnowledgeAction(currentUser.userId(), currentUser.role(),
+                AuditLogService.ACTION_KNOWLEDGE_ARCHIVE,
+                hash,
+                "归档知识文件 " + hash);
+        return detail;
+    }
+
+    @Operation(summary = "重新处理单个知识文件")
+    @PostMapping("/files/{hash}/reprocess")
+    public KnowledgeDocumentDetail reprocessKnowledgeFile(@PathVariable("hash") String hash,
+                                                          @AuthenticationPrincipal AuthenticatedUser currentUser) throws IOException {
+        KnowledgeDocumentDetail detail = knowledgeBaseService.reprocessKnowledge(hash);
+        auditLogService.recordKnowledgeAction(currentUser.userId(), currentUser.role(),
+                AuditLogService.ACTION_KNOWLEDGE_REPROCESS,
+                hash,
+                "重新处理知识文件 " + hash);
+        return detail;
+    }
+
+    @Operation(summary = "批量发布知识文件")
+    @PostMapping("/files/batch/publish")
+    public List<KnowledgeDocumentDetail> publishKnowledgeFiles(@RequestBody KnowledgeBatchActionRequest request,
+                                                               @AuthenticationPrincipal AuthenticatedUser currentUser) throws IOException {
+        List<KnowledgeDocumentDetail> details = new ArrayList<>();
+        for (String hash : request == null ? List.<String>of() : request.getHashes()) {
+            KnowledgeDocumentDetail detail = knowledgeBaseService.publishKnowledge(hash);
+            details.add(detail);
+            auditLogService.recordKnowledgeAction(currentUser.userId(), currentUser.role(),
+                    AuditLogService.ACTION_KNOWLEDGE_PUBLISH, hash, "批量发布知识文件 " + hash);
+        }
+        return details;
+    }
+
+    @Operation(summary = "批量归档知识文件")
+    @PostMapping("/files/batch/archive")
+    public List<KnowledgeDocumentDetail> archiveKnowledgeFiles(@RequestBody KnowledgeBatchActionRequest request,
+                                                               @AuthenticationPrincipal AuthenticatedUser currentUser) throws IOException {
+        List<KnowledgeDocumentDetail> details = new ArrayList<>();
+        for (String hash : request == null ? List.<String>of() : request.getHashes()) {
+            KnowledgeDocumentDetail detail = knowledgeBaseService.archiveKnowledge(hash);
+            details.add(detail);
+            auditLogService.recordKnowledgeAction(currentUser.userId(), currentUser.role(),
+                    AuditLogService.ACTION_KNOWLEDGE_ARCHIVE, hash, "批量归档知识文件 " + hash);
+        }
+        return details;
     }
 }

@@ -32,8 +32,7 @@ public class AppointmentTools {
     @Autowired
     private ChatSessionUserBindingService chatSessionUserBindingService;
 
-    @Tool(name="预约挂号", value = "根据参数，先执行工具方法queryDepartment查询是否可预约，并直接给用户回答是否可预约，并让用户确认所有预约信息，用户确认后再进行预约。如果用户没有提供具体的医生姓名，请从\n" +
-            "向量存储中找到一位医生。")
+    @Tool(name="预约挂号", value = "用于最终创建预约记录。只有在姓名、身份证号、预约科室、预约日期、预约时间都已经明确，且用户已经明确确认要提交预约时才调用。工具会返回结构化字段：status、nextAction、userVisibleSummary、missingFields，以及当前预约详情。模型必须优先依据这些字段回复用户。")
     @Transactional(rollbackFor = Exception.class)
     public String bookAppointment(
             @ToolMemoryId Long memoryId,
@@ -88,7 +87,7 @@ public class AppointmentTools {
         }
     }
 
-    @Tool(name="取消预约挂号", value = "根据参数，查询预约是否存在，如果存在则删除预约记录并返回取消预约成功，否则返回取消预约失败")
+    @Tool(name="取消预约挂号", value = "用于最终取消已有预约。只有在姓名、身份证号、预约科室、预约日期、预约时间都已经明确，且用户明确表示要取消时才调用。工具会返回结构化字段：status、nextAction、userVisibleSummary、missingFields，以及当前预约详情。模型必须优先依据这些字段回复用户。")
     public String cancelAppointment(
             @ToolMemoryId Long memoryId,
             @P(value = "预约人姓名") String username,
@@ -127,7 +126,7 @@ public class AppointmentTools {
         }
     }
 
-    @Tool(name = "查询是否有号源", value="根据科室名称，日期，时间和医生查询是否有号源，并返回给用户")
+    @Tool(name = "查询是否有号源", value="用于快速判断某个科室、日期、时间、医生是否存在可预约号源。适合回答“有没有号”“能不能挂”这类问题。")
     public boolean queryDepartment(
             @P(value = "科室名称") String name,
             @P(value = "日期") String date,
@@ -142,7 +141,7 @@ public class AppointmentTools {
         return true;
     }
 
-    @Tool(name = "查询号源详情", value = "根据科室名称、日期、时间和医生查询是否有号源，并返回结构化号源结果。")
+    @Tool(name = "查询号源详情", value = "用于处理“有没有号”“某天某科某医生能不能挂”这类问题。会返回结构化字段：status、nextAction、userVisibleSummary、department、date、time、doctorName。模型必须优先依据这些字段直接回答用户。")
     public String queryDepartmentDetail(
             @P(value = "科室名称") String name,
             @P(value = "日期") String date,
@@ -151,9 +150,14 @@ public class AppointmentTools {
     ) {
         boolean available = queryDepartment(name, date, time, doctorName);
         List<String> lines = new ArrayList<>();
+        lines.add("resultVersion=APPOINTMENT_TOOL_V2");
         lines.add("tool=QUERY_APPOINTMENT_SLOT");
         lines.add("status=" + (available ? "AVAILABLE" : "UNAVAILABLE"));
         lines.add("message=" + (available ? "当前条件下存在可预约号源" : "当前条件下暂无可预约号源"));
+        lines.add("nextAction=INFORM_SLOT_RESULT");
+        lines.add("userVisibleSummary=" + (available
+                ? "当前条件下存在可预约号源，请直接告诉用户可以继续预约。"
+                : "当前条件下暂无可预约号源，请直接告诉用户当前不可预约。"));
         lines.add("department=" + safe(name));
         lines.add("date=" + safe(date));
         lines.add("time=" + safe(time));
@@ -194,9 +198,12 @@ public class AppointmentTools {
 
     private String structuredResult(String toolName, String status, String message, Appointment appointment, List<String> missingFields) {
         List<String> lines = new ArrayList<>();
+        lines.add("resultVersion=APPOINTMENT_TOOL_V2");
         lines.add("tool=" + toolName);
         lines.add("status=" + status);
         lines.add("message=" + message);
+        lines.add("nextAction=" + resolveNextAction(status));
+        lines.add("userVisibleSummary=" + resolveUserVisibleSummary(status, message, appointment, missingFields));
         if (missingFields != null && !missingFields.isEmpty()) {
             lines.add("missingFields=" + String.join(",", missingFields));
         }
@@ -210,6 +217,47 @@ public class AppointmentTools {
             lines.add("doctorName=" + safe(appointment.getDoctorName()));
         }
         return String.join("\n", lines);
+    }
+
+    private String resolveNextAction(String status) {
+        if ("MISSING_REQUIRED_FIELDS".equals(status)) {
+            return "ASK_MISSING_FIELDS";
+        }
+        if ("SUCCESS".equals(status)) {
+            return "CONFIRM_SUCCESS";
+        }
+        if ("DUPLICATE".equals(status)) {
+            return "INFORM_DUPLICATE";
+        }
+        if ("NOT_FOUND".equals(status)) {
+            return "INFORM_NOT_FOUND";
+        }
+        if ("FAILED".equals(status) || "ERROR".equals(status)) {
+            return "INFORM_FAILURE";
+        }
+        if ("AVAILABLE".equals(status) || "UNAVAILABLE".equals(status)) {
+            return "INFORM_SLOT_RESULT";
+        }
+        return "RESPOND_TO_USER";
+    }
+
+    private String resolveUserVisibleSummary(String status, String message, Appointment appointment, List<String> missingFields) {
+        if ("MISSING_REQUIRED_FIELDS".equals(status)) {
+            return "信息还不完整，请只补充缺失字段：" + String.join("、", missingFields == null ? List.of() : missingFields);
+        }
+        if ("SUCCESS".equals(status) && appointment != null) {
+            return "预约已成功创建，请直接向用户确认预约成功，并简要复述预约信息。";
+        }
+        if ("DUPLICATE".equals(status)) {
+            return "存在相同科室与时间的预约记录，请直接告知用户，不要重复创建。";
+        }
+        if ("NOT_FOUND".equals(status)) {
+            return "未找到匹配的预约记录，请直接告知用户。";
+        }
+        if ("FAILED".equals(status) || "ERROR".equals(status)) {
+            return "本次预约操作失败，请直接告知用户稍后重试。";
+        }
+        return message == null ? "" : message;
     }
 
     private String safe(Object value) {

@@ -1,10 +1,14 @@
 package com.linkjb.aimed.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.linkjb.aimed.bean.ChatStreamMetadata;
 import com.linkjb.aimed.assistant.LocalStreamingAiMedAgent;
 import com.linkjb.aimed.assistant.OnlineAiMedAgent;
 import com.linkjb.aimed.bean.ChatProviderConfigResponse;
 import com.linkjb.aimed.config.RequestTraceFilter;
 import com.linkjb.aimed.config.TraceIdProvider;
+import dev.langchain4j.service.TokenStream;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import org.apache.skywalking.apm.toolkit.trace.ActiveSpan;
 import org.apache.skywalking.apm.toolkit.trace.ConsumerWrapper;
@@ -14,6 +18,7 @@ import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.FluxSink;
@@ -22,39 +27,60 @@ import java.util.Locale;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
+/**
+ * 聊天编排服务。
+ *
+ * 这个类不直接负责“大模型怎么回答”，而是负责把聊天请求编排成一条完整链路：
+ * - 选择本地还是在线模型
+ * - 处理附件增强
+ * - 统一流式输出
+ * - 把检索摘要转换成前端可消费的引用 metadata
+ * - 把同一条请求的 traceId 和检索摘要挂回审计链路
+ *
+ * 也因此，这里最重要的不是 prompt 本身，而是“回答正文”和“RAG 摘要”如何在同一条流里稳定共存。
+ */
 @Service
 public class ChatApplicationService {
 
     private static final Logger log = LoggerFactory.getLogger(ChatApplicationService.class);
     public static final String LOCAL_OLLAMA = "LOCAL_OLLAMA";
     public static final String QWEN_ONLINE = "QWEN_ONLINE";
+    public static final String STREAM_METADATA_MARKER = "\n\n[[AIMED_STREAM_METADATA]]";
 
     private final LocalStreamingAiMedAgent localStreamingAiMedAgent;
     private final OnlineAiMedAgent onlineAiMedAgent;
     private final KnowledgeBaseService knowledgeBaseService;
+    private final HybridKnowledgeRetrieverService hybridKnowledgeRetrieverService;
     private final VisionChatService visionChatService;
     private final TraceIdProvider traceIdProvider;
+    private final ObjectMapper objectMapper;
     private final String defaultProvider;
     private final boolean localProviderEnabled;
     private final boolean onlineProviderEnabled;
+    private final Map<String, HybridKnowledgeRetrieverService.RetrievalSummary> completedRetrievalSummaries = new ConcurrentHashMap<>();
 
     public ChatApplicationService(LocalStreamingAiMedAgent localStreamingAiMedAgent,
                                   OnlineAiMedAgent onlineAiMedAgent,
                                   KnowledgeBaseService knowledgeBaseService,
+                                  HybridKnowledgeRetrieverService hybridKnowledgeRetrieverService,
                                   VisionChatService visionChatService,
                                   TraceIdProvider traceIdProvider,
+                                  ObjectMapper objectMapper,
                                   @Value("${app.provider.default:LOCAL_OLLAMA}") String defaultProvider,
                                   @Value("${app.provider.local-enabled:true}") boolean localProviderEnabled,
                                   @Value("${app.provider.online-enabled:true}") boolean onlineProviderEnabled) {
         this.localStreamingAiMedAgent = localStreamingAiMedAgent;
         this.onlineAiMedAgent = onlineAiMedAgent;
         this.knowledgeBaseService = knowledgeBaseService;
+        this.hybridKnowledgeRetrieverService = hybridKnowledgeRetrieverService;
         this.visionChatService = visionChatService;
         this.traceIdProvider = traceIdProvider;
+        this.objectMapper = objectMapper;
         this.defaultProvider = defaultProvider;
         this.localProviderEnabled = localProviderEnabled;
         this.onlineProviderEnabled = onlineProviderEnabled;
@@ -63,7 +89,7 @@ public class ChatApplicationService {
     public Flux<String> chat(Long memoryId, String message, String modelProvider) {
         String provider = normalizeProvider(modelProvider);
         log.info("chat.request provider={} memoryId={} chars={} attachments=0", provider, memoryId, textLength(message));
-        return startChat(provider, memoryId, message)
+        return startChat(provider, memoryId, message, message)
                 .onErrorResume(error -> {
                     log.error("chat.request.failed provider={} memoryId={} chars={}", provider, memoryId, textLength(message), error);
                     return Flux.just(errorMessageForProvider(provider));
@@ -78,7 +104,7 @@ public class ChatApplicationService {
                 return Flux.just(visionChatService.analyze(memoryId, message, files, provider));
             }
             String augmentedMessage = knowledgeBaseService.buildChatMessageWithAttachments(message, files);
-            return startChat(provider, memoryId, augmentedMessage)
+            return startChat(provider, memoryId, augmentedMessage, message)
                     .onErrorResume(error -> {
                         log.error("chat.request.failed provider={} memoryId={} attachments={}", provider, memoryId, fileCount(files), error);
                         return Flux.just(errorMessageForProvider(provider));
@@ -100,27 +126,60 @@ public class ChatApplicationService {
         return new ChatProviderConfigResponse(normalizeProvider(defaultProvider), enabledProviders);
     }
 
-    private Flux<String> startChat(String provider, Long memoryId, String message) {
+    private Flux<String> startChat(String provider, Long memoryId, String message, String summaryFallbackQuery) {
         if (QWEN_ONLINE.equals(provider)) {
-            return withFluxLogs(provider, memoryId, message, onlineAiMedAgent.chat(memoryId, message));
+            String requestTraceId = traceIdProvider.currentTraceId();
+            Flux<String> source = onlineAiMedAgent.chat(memoryId, message);
+            // 在线模型本身已经是 Flux，因此正文先自然流出，等流结束后再把检索摘要拼成一个 metadata 尾包。
+            // 这样前端既能第一时间看到回答，也不会因为等引用而卡住首屏输出。
+            return withFluxLogs(provider, memoryId, message, source)
+                    .concatWith(Flux.defer(() -> {
+                        HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary = resolveRetrievalSummary(provider, summaryFallbackQuery);
+                        rememberRetrievalSummary(requestTraceId, retrievalSummary);
+                        logRetrievalSummary(provider, memoryId, retrievalSummary);
+                        String metadataChunk = encodeStreamMetadata(retrievalSummary);
+                        return StringUtils.hasText(metadataChunk) ? Flux.just(metadataChunk) : Flux.empty();
+                    }));
         }
-        // 本地模型仍按 token 流输出，前端继续用统一的流式解码逻辑消费。
+        // 本地 Ollama 仍按 token 流输出，前端继续用统一的流式解码逻辑消费。
+        // 这里多做了一层“最终文本兜底”，是因为本地模型偶发会出现 partial 很少、complete 里才有稳定正文的情况。
+        TokenStream tokenStream = localStreamingAiMedAgent.chat(memoryId, message);
         return Flux.create(emitter -> {
             long startedAt = System.nanoTime();
             AtomicInteger chunkCount = new AtomicInteger();
             AtomicLong charCount = new AtomicLong();
+            StringBuilder streamedText = new StringBuilder();
             String requestTraceId = traceIdProvider.currentTraceId();
             log.info("model.stream.start provider={} memoryId={} chars={}", provider, memoryId, textLength(message));
-            localStreamingAiMedAgent.chat(memoryId, message)
+            tokenStream
                     .onPartialResponse(tracedConsumer(requestTraceId, "chat.local.stream.partial", partial -> {
                         chunkCount.incrementAndGet();
                         charCount.addAndGet(partial == null ? 0 : partial.length());
+                        if (partial != null) {
+                            streamedText.append(partial);
+                        }
                         emitter.next(partial);
                     }))
                     .onCompleteResponse(tracedConsumer(requestTraceId, "chat.local.stream.complete", response -> {
+                        HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary = resolveRetrievalSummary(provider, summaryFallbackQuery);
+                        rememberRetrievalSummary(requestTraceId, retrievalSummary);
+                        logRetrievalSummary(provider, memoryId, retrievalSummary);
+                        String finalText = finalResponseText(response);
+                        // 如果本地模型最后没给出稳定正文，就退化成基于 citation 的简短总结，至少保证用户看到的是一句能读懂的话，
+                        // 而不是“只有引用标签，没有回答正文”。
+                        if (!StringUtils.hasText(finalText) && !StringUtils.hasText(streamedText.toString())) {
+                            finalText = fallbackAnswerFromCitations(retrievalSummary);
+                        }
+                        if (shouldEmitFinalText(streamedText.toString(), finalText)) {
+                            emitter.next(finalText);
+                        }
                         log.info("model.stream.complete provider={} memoryId={} chunks={} chars={} durationMs={} finishReason={} outputTokens={}",
                                 provider, memoryId, chunkCount.get(), charCount.get(), durationMs(startedAt),
                                 finishReason(response), outputTokenCount(response));
+                        String metadataChunk = encodeStreamMetadata(retrievalSummary);
+                        if (StringUtils.hasText(metadataChunk)) {
+                            emitter.next(metadataChunk);
+                        }
                         emitter.complete();
                     }))
                     .onError(tracedConsumer(requestTraceId, "chat.local.stream.error", error -> {
@@ -137,6 +196,7 @@ public class ChatApplicationService {
         AtomicInteger chunkCount = new AtomicInteger();
         AtomicLong charCount = new AtomicLong();
         log.info("model.stream.start provider={} memoryId={} chars={}", provider, memoryId, textLength(message));
+        // 在线和本地最后都要汇总成同一套监控口径，所以这里把 chunk 数、字符数、耗时统一记下来。
         return source
                 .doOnNext(chunk -> {
                     chunkCount.incrementAndGet();
@@ -174,8 +234,64 @@ public class ChatApplicationService {
         return "抱歉，当前本地 Ollama 模型暂时不可用，请检查本机 Ollama 服务和模型是否已启动。";
     }
 
+    private void logRetrievalSummary(String provider, Long memoryId, HybridKnowledgeRetrieverService.RetrievalSummary summary) {
+        if (summary == null) {
+            return;
+        }
+        log.info("rag.retrieve.summary provider={} memoryId={} queryType={} keywordCount={} vectorCount={} mergedCount={} finalCitationCount={} emptyRecall={} durationMs={} topDocHashes={}",
+                provider,
+                memoryId,
+                summary.queryType(),
+                summary.retrievedCountKeyword(),
+                summary.retrievedCountVector(),
+                summary.mergedCount(),
+                summary.finalHits().size(),
+                summary.emptyRecall(),
+                summary.durationMs(),
+                summary.finalHits().stream().map(HybridKnowledgeRetrieverService.RetrievedChunk::fileHash).distinct().limit(5).toList());
+    }
+
+    private String encodeStreamMetadata(HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary) {
+        ChatStreamMetadata metadata = hybridKnowledgeRetrieverService.toChatStreamMetadata(retrievalSummary);
+        try {
+            // metadata 作为尾包塞回同一条流里，前端只要认这个 marker，就能把“回答正文”和“引用摘要”拆开显示。
+            return STREAM_METADATA_MARKER + objectMapper.writeValueAsString(metadata);
+        } catch (JsonProcessingException exception) {
+            log.warn("chat.stream.metadata.encode.failed", exception);
+            return "";
+        }
+    }
+
     private int textLength(String text) {
         return text == null ? 0 : text.length();
+    }
+
+    private HybridKnowledgeRetrieverService.RetrievalSummary resolveRetrievalSummary(String provider, String fallbackQuery) {
+        HybridKnowledgeRetrieverService.RetrievalSummary summary = hybridKnowledgeRetrieverService.consumeLastSummary();
+        if (summary != null) {
+            return summary;
+        }
+        // 正常情况下，Agent 内部的 ContentRetriever 会把摘要放进 ThreadLocal。
+        // 只有在异常边界或本地模型特殊结束路径下，才需要这里兜底再查一次。
+        HybridKnowledgeRetrieverService.RetrievalProfile profile =
+                QWEN_ONLINE.equals(provider)
+                        ? HybridKnowledgeRetrieverService.RetrievalProfile.ONLINE
+                        : HybridKnowledgeRetrieverService.RetrievalProfile.LOCAL;
+        return hybridKnowledgeRetrieverService.search(fallbackQuery, profile);
+    }
+
+    public HybridKnowledgeRetrieverService.RetrievalSummary consumeCompletedRetrievalSummary(String traceId) {
+        if (!StringUtils.hasText(traceId)) {
+            return null;
+        }
+        return completedRetrievalSummaries.remove(traceId);
+    }
+
+    private void rememberRetrievalSummary(String traceId, HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary) {
+        if (!StringUtils.hasText(traceId) || retrievalSummary == null) {
+            return;
+        }
+        completedRetrievalSummaries.put(traceId, retrievalSummary);
     }
 
     private int fileCount(MultipartFile[] files) {
@@ -198,6 +314,48 @@ public class ChatApplicationService {
             return null;
         }
         return response.tokenUsage().outputTokenCount();
+    }
+
+    private String finalResponseText(ChatResponse response) {
+        if (response == null || response.aiMessage() == null) {
+            return "";
+        }
+        // 优先返回真正给用户看的 text；只有 text 缺失时，才退回 thinking，避免把“思考过程”当成主回答丢给前端。
+        if (StringUtils.hasText(response.aiMessage().text())) {
+            return response.aiMessage().text();
+        }
+        return response.aiMessage().thinking();
+    }
+
+    private boolean shouldEmitFinalText(String streamedText, String finalText) {
+        if (!StringUtils.hasText(finalText)) {
+            return false;
+        }
+        if (!StringUtils.hasText(streamedText)) {
+            return true;
+        }
+        String normalizedStreamed = streamedText.trim();
+        String normalizedFinal = finalText.trim();
+        return !normalizedFinal.equals(normalizedStreamed) && !normalizedStreamed.endsWith(normalizedFinal);
+    }
+
+    private String fallbackAnswerFromCitations(HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary) {
+        if (retrievalSummary == null || retrievalSummary.finalHits().isEmpty()) {
+            return "当前模型没有产出稳定正文，但系统已完成检索。请稍后重试，或切换到千问在线。";
+        }
+        // 这是最后一级兜底：宁可给一个基于命中片段的短总结，也不要让用户只看到引用而完全看不到回答。
+        List<String> snippets = retrievalSummary.finalHits().stream()
+                .map(HybridKnowledgeRetrieverService.RetrievedChunk::preview)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .limit(2)
+                .toList();
+        StringBuilder builder = new StringBuilder("根据已命中的知识资料，先给你一个简要总结：\n\n");
+        for (int i = 0; i < snippets.size(); i++) {
+            builder.append(i + 1).append(". ").append(snippets.get(i)).append('\n');
+        }
+        builder.append("\n如需更完整分析，建议重试一次，或切换到千问在线继续提问。");
+        return builder.toString();
     }
 
     private <T> Consumer<T> tracedConsumer(String requestTraceId, String operationName, Consumer<T> delegate) {

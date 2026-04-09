@@ -15,6 +15,15 @@ public class KnowledgeFileInfo {
     private Integer progressPercent;
     private Integer currentBatch;
     private Integer totalBatches;
+    private String docType;
+    private String department;
+    private String audience;
+    private String version;
+    private String effectiveAt;
+    private String title;
+    private String doctorName;
+    private Integer sourcePriority;
+    private String keywords;
 
     public String getFileName() {
         return fileName;
@@ -126,5 +135,77 @@ public class KnowledgeFileInfo {
 
     public void setTotalBatches(Integer totalBatches) {
         this.totalBatches = totalBatches;
+    }
+
+    public String getDocType() {
+        return docType;
+    }
+
+    public void setDocType(String docType) {
+        this.docType = docType;
+    }
+
+    public String getDepartment() {
+        return department;
+    }
+
+    public void setDepartment(String department) {
+        this.department = department;
+    }
+
+    public String getAudience() {
+        return audience;
+    }
+
+    public void setAudience(String audience) {
+        this.audience = audience;
+    }
+
+    public String getVersion() {
+        return version;
+    }
+
+    public void setVersion(String version) {
+        this.version = version;
+    }
+
+    public String getEffectiveAt() {
+        return effectiveAt;
+    }
+
+    public void setEffectiveAt(String effectiveAt) {
+        this.effectiveAt = effectiveAt;
+    }
+
+    public String getTitle() {
+        return title;
+    }
+
+    public void setTitle(String title) {
+        this.title = title;
+    }
+
+    public String getDoctorName() {
+        return doctorName;
+    }
+
+    public void setDoctorName(String doctorName) {
+        this.doctorName = doctorName;
+    }
+
+    public Integer getSourcePriority() {
+        return sourcePriority;
+    }
+
+    public void setSourcePriority(Integer sourcePriority) {
+        this.sourcePriority = sourcePriority;
+    }
+
+    public String getKeywords() {
+        return keywords;
+    }
+
+    public void setKeywords(String keywords) {
+        this.keywords = keywords;
     }
 }

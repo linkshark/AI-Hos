@@ -34,6 +34,8 @@ public class VisionChatService {
     private static final Logger log = LoggerFactory.getLogger(VisionChatService.class);
     public static final String LOCAL_OLLAMA = "LOCAL_OLLAMA";
     public static final String QWEN_ONLINE = "QWEN_ONLINE";
+    public static final String QWEN_ONLINE_FAST = "QWEN_ONLINE_FAST";
+    public static final String QWEN_ONLINE_DEEP = "QWEN_ONLINE_DEEP";
 
     private final ChatModel onlineVisionChatModel;
     private final ChatModel localVisionChatModel;
@@ -119,11 +121,11 @@ public class VisionChatService {
                 return LOCAL_OLLAMA;
             }
             if (onlineProviderEnabled) {
-                return QWEN_ONLINE;
+                return QWEN_ONLINE_FAST;
             }
         }
         if (onlineProviderEnabled) {
-            return QWEN_ONLINE;
+            return QWEN_ONLINE_FAST;
         }
         if (localProviderEnabled) {
             return LOCAL_OLLAMA;

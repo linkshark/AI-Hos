@@ -5,10 +5,19 @@ import com.linkjb.aimed.bean.AdminUpdateUserRoleRequest;
 import com.linkjb.aimed.bean.AdminUpdateUserStatusRequest;
 import com.linkjb.aimed.bean.AdminUserItem;
 import com.linkjb.aimed.bean.AuditLogItem;
+import com.linkjb.aimed.bean.KnowledgeMetadataBackfillRequest;
+import com.linkjb.aimed.bean.KnowledgeMetadataBackfillResponse;
+import com.linkjb.aimed.bean.KnowledgeRetrievalDiagnosticRequest;
+import com.linkjb.aimed.bean.KnowledgeRetrievalDiagnosticResponse;
 import com.linkjb.aimed.bean.PagedResponse;
+import com.linkjb.aimed.bean.mcp.McpServerItem;
+import com.linkjb.aimed.bean.mcp.McpServerRequest;
+import com.linkjb.aimed.bean.mcp.McpServerTestResponse;
 import com.linkjb.aimed.security.AuthenticatedUser;
 import com.linkjb.aimed.service.AdminService;
 import com.linkjb.aimed.service.AuditLogService;
+import com.linkjb.aimed.service.KnowledgeAdminService;
+import com.linkjb.aimed.service.McpServerAdminService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -18,12 +27,14 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Tag(name = "Admin")
 @RestController
@@ -32,11 +43,14 @@ public class AdminController {
 
     private final AdminService adminService;
     private final AuditLogService auditLogService;
+    private final KnowledgeAdminService knowledgeAdminService;
 
     public AdminController(AdminService adminService,
-                           AuditLogService auditLogService) {
+                           AuditLogService auditLogService,
+                           KnowledgeAdminService knowledgeAdminService) {
         this.adminService = adminService;
         this.auditLogService = auditLogService;
+        this.knowledgeAdminService = knowledgeAdminService;
     }
 
     @Operation(summary = "管理员查看用户列表")
@@ -86,5 +100,43 @@ public class AdminController {
                                                  @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime createdTo) {
         return auditLogService.listLogs(page, size, actionType, targetType, keyword, actorUserId, createdFrom, createdTo);
     }
+
+    @Operation(summary = "预览知识 metadata 回填结果")
+    @PostMapping("/knowledge/metadata/backfill/preview")
+    public KnowledgeMetadataBackfillResponse previewKnowledgeMetadataBackfill(@RequestBody(required = false) KnowledgeMetadataBackfillRequest request,
+                                                                              @AuthenticationPrincipal AuthenticatedUser currentUser) {
+        KnowledgeMetadataBackfillResponse response = knowledgeAdminService.previewMetadataBackfill(request);
+        auditLogService.recordKnowledgeAction(currentUser.userId(), currentUser.role(),
+                AuditLogService.ACTION_KNOWLEDGE_METADATA_BACKFILL_PREVIEW,
+                String.valueOf(response.targetCount()),
+                "预览知识 metadata 回填，共 " + response.targetCount() + " 个文件");
+        return response;
+    }
+
+    @Operation(summary = "执行知识 metadata 回填")
+    @PostMapping("/knowledge/metadata/backfill")
+    public KnowledgeMetadataBackfillResponse applyKnowledgeMetadataBackfill(@RequestBody(required = false) KnowledgeMetadataBackfillRequest request,
+                                                                            @AuthenticationPrincipal AuthenticatedUser currentUser) {
+        KnowledgeMetadataBackfillResponse response = knowledgeAdminService.applyMetadataBackfill(request);
+        auditLogService.recordKnowledgeAction(currentUser.userId(), currentUser.role(),
+                AuditLogService.ACTION_KNOWLEDGE_METADATA_BACKFILL_APPLY,
+                String.valueOf(response.updatedCount()),
+                "执行知识 metadata 回填，更新 " + response.updatedCount() + " 个文件");
+        return response;
+    }
+
+    @Operation(summary = "管理员诊断知识检索")
+    @PostMapping("/knowledge/retrieval/diagnose")
+    public KnowledgeRetrievalDiagnosticResponse diagnoseKnowledgeRetrieval(@RequestBody(required = false) KnowledgeRetrievalDiagnosticRequest request,
+                                                                           @AuthenticationPrincipal AuthenticatedUser currentUser) {
+        KnowledgeRetrievalDiagnosticResponse response = knowledgeAdminService.diagnoseRetrieval(request);
+        auditLogService.recordKnowledgeAction(currentUser.userId(), currentUser.role(),
+                AuditLogService.ACTION_KNOWLEDGE_RETRIEVAL_DIAGNOSE,
+                response.queryType(),
+                "诊断知识检索 queryType=" + response.queryType() + " profile=" + response.profile());
+        return response;
+    }
+
+
 
 }

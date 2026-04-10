@@ -23,6 +23,21 @@ spring:
     username: ${MYSQL_USERNAME:root}
     password: ${MYSQL_PASSWORD:}
     driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      # 连接最大存活时间：5min（必须 < MySQL wait_timeout）
+      max-lifetime: 300000
+      # 空闲超时（必须 < max-lifetime）3min
+      idle-timeout: 180000
+      # 最小空闲连接
+      minimum-idle: 5
+      # 最大连接数
+      maximum-pool-size: 30
+      # 获取连接前检测有效性
+      test-on-borrow: true
+      # 连接有效性检测语句
+      connection-test-query: SELECT 1
+      # 从连接池获取连接的超时时间 30s
+      connection-timeout: 30000
   mail:
     host: ${MAIL_HOST:smtp.qq.com}
     port: ${MAIL_PORT:465}
@@ -85,6 +100,7 @@ app:
   local-chat:
     base-url: ${LOCAL_CHAT_BASE_URL:http://localhost:11434}
     model-name: ${LOCAL_CHAT_MODEL_NAME:qwen2.5:3b}
+    max-history-messages: ${LOCAL_CHAT_MAX_HISTORY_MESSAGES:20}
     temperature: ${LOCAL_CHAT_TEMPERATURE:0.3}
     num-predict: ${LOCAL_CHAT_NUM_PREDICT:1024}
     num-ctx: ${LOCAL_CHAT_NUM_CTX:4096}
@@ -94,15 +110,20 @@ app:
   online-chat:
     base-url: ${ONLINE_CHAT_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
     api-key: ${ONLINE_CHAT_API_KEY:${BL_KEY:}}
-    model-name: ${ONLINE_CHAT_MODEL_NAME:qwen3.5-plus}
+    fast:
+      model-name: ${ONLINE_CHAT_FAST_MODEL_NAME:qwen-plus}
+      max-history-messages: ${ONLINE_CHAT_FAST_MAX_HISTORY_MESSAGES:8}
+    deep:
+      model-name: ${ONLINE_CHAT_MODEL_NAME:qwen3.6-plus}
+      max-history-messages: ${ONLINE_CHAT_DEEP_MAX_HISTORY_MESSAGES:12}
     temperature: ${ONLINE_CHAT_TEMPERATURE:0.9}
     timeout: ${ONLINE_CHAT_TIMEOUT:PT90S}
-    log-requests: ${ONLINE_CHAT_LOG_REQUESTS:true}
-    log-responses: ${ONLINE_CHAT_LOG_RESPONSES:true}
+    log-requests: ${ONLINE_CHAT_LOG_REQUESTS:false}
+    log-responses: ${ONLINE_CHAT_LOG_RESPONSES:false}
   vision-chat:
     base-url: ${VISION_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
     api-key: ${VISION_API_KEY:${BL_KEY:}}
-    model-name: ${VISION_MODEL_NAME:qwen3.5-plus}
+    model-name: ${VISION_MODEL_NAME:qwen3.6-plus}
     timeout: ${VISION_TIMEOUT:PT90S}
   local-vision:
     base-url: ${LOCAL_VISION_BASE_URL:http://localhost:11434}
@@ -125,6 +146,9 @@ app:
       vector-top-k: ${KNOWLEDGE_SEARCH_VECTOR_TOP_K:8}
       final-top-k: ${KNOWLEDGE_SEARCH_FINAL_TOP_K:6}
       vector-min-score: ${KNOWLEDGE_SEARCH_VECTOR_MIN_SCORE:0.35}
+      online:
+        skip-vector-when-keyword-strong: ${KNOWLEDGE_SEARCH_ONLINE_SKIP_VECTOR_WHEN_KEYWORD_STRONG:true}
+        keyword-only-min-hits: ${KNOWLEDGE_SEARCH_ONLINE_KEYWORD_ONLY_MIN_HITS:1}
       local:
         keyword-top-k: ${KNOWLEDGE_SEARCH_LOCAL_KEYWORD_TOP_K:4}
         vector-top-k: ${KNOWLEDGE_SEARCH_LOCAL_VECTOR_TOP_K:4}
@@ -140,6 +164,8 @@ mybatis-plus:
     map-underscore-to-camel-case: true
 
 logging:
+  file:
+    name: ${LOG_FILE_NAME:}
   level:
     root: info
     com.linkjb.aimed: info

@@ -11,7 +11,7 @@ import static dev.langchain4j.service.spring.AiServiceWiringMode.EXPLICIT;
 @AiService(
         wiringMode = EXPLICIT,
         streamingChatModel = "localStreamingChatModel",
-        chatMemoryProvider = "chatMemoryProviderAiMed",
+        chatMemoryProvider = "localChatMemoryProviderAiMed",
         tools = "appointmentTools",
         contentRetriever = "contentRetrieverKnowledgeLocal"
 )

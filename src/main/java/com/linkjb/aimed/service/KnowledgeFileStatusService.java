@@ -1,6 +1,7 @@
 package com.linkjb.aimed.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.linkjb.aimed.entity.KnowledgeFileStatus;
 import com.linkjb.aimed.mapper.KnowledgeFileStatusMapper;
 import org.springframework.stereotype.Service;
@@ -27,9 +28,13 @@ public class KnowledgeFileStatusService {
         if (!StringUtils.hasText(hash)) {
             return null;
         }
-        return knowledgeFileStatusMapper.selectOne(new LambdaQueryWrapper<KnowledgeFileStatus>()
-                .eq(KnowledgeFileStatus::getHash, hash)
-                .last("limit 1"));
+        return knowledgeFileStatusMapper.selectList(new LambdaQueryWrapper<KnowledgeFileStatus>()
+                        .eq(KnowledgeFileStatus::getHash, hash)
+                        .orderByDesc(KnowledgeFileStatus::getId)
+                        .last("limit 1"))
+                .stream()
+                .findFirst()
+                .orElse(null);
     }
 
     public boolean existsByHash(String hash) {
@@ -46,9 +51,11 @@ public class KnowledgeFileStatusService {
             knowledgeFileStatusMapper.insert(status);
             return;
         }
-        status.setId(existing.getId());
+        status.setId(null);
         status.setCreatedAt(existing.getCreatedAt());
-        knowledgeFileStatusMapper.updateById(status);
+        knowledgeFileStatusMapper.update(status, new LambdaUpdateWrapper<KnowledgeFileStatus>()
+                .eq(KnowledgeFileStatus::getHash, status.getHash())
+                .eq(KnowledgeFileStatus::getId, existing.getId()));
     }
 
     public void deleteByHash(String hash) {

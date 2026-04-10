@@ -1,6 +1,8 @@
 package com.linkjb.aimed.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.linkjb.aimed.bean.AdminUserItem;
 import com.linkjb.aimed.bean.PagedResponse;
 import com.linkjb.aimed.entity.AppUser;
@@ -94,43 +96,39 @@ public class AppUserService {
         if (userId == null || !StringUtils.hasText(role)) {
             return;
         }
-        AppUser user = new AppUser();
-        user.setId(userId);
-        user.setRole(normalizeRole(role));
-        user.setUpdatedAt(LocalDateTime.now());
-        appUserMapper.updateById(user);
+        appUserMapper.update(null, new LambdaUpdateWrapper<AppUser>()
+                .eq(AppUser::getId, userId)
+                .set(AppUser::getRole, normalizeRole(role))
+                .set(AppUser::getUpdatedAt, LocalDateTime.now()));
     }
 
     public void updateStatus(Long userId, String status) {
         if (userId == null || !StringUtils.hasText(status)) {
             return;
         }
-        AppUser user = new AppUser();
-        user.setId(userId);
-        user.setStatus(normalizeStatus(status));
-        user.setUpdatedAt(LocalDateTime.now());
-        appUserMapper.updateById(user);
+        appUserMapper.update(null, new LambdaUpdateWrapper<AppUser>()
+                .eq(AppUser::getId, userId)
+                .set(AppUser::getStatus, normalizeStatus(status))
+                .set(AppUser::getUpdatedAt, LocalDateTime.now()));
     }
 
     public void updateLastLogin(Long userId) {
         if (userId == null) {
             return;
         }
-        AppUser user = new AppUser();
-        user.setId(userId);
-        user.setLastLoginAt(LocalDateTime.now());
-        appUserMapper.updateById(user);
+        appUserMapper.update(null, new LambdaUpdateWrapper<AppUser>()
+                .eq(AppUser::getId, userId)
+                .set(AppUser::getLastLoginAt, LocalDateTime.now()));
     }
 
     public void updatePassword(Long userId, String passwordHash) {
         if (userId == null || !StringUtils.hasText(passwordHash)) {
             return;
         }
-        AppUser user = new AppUser();
-        user.setId(userId);
-        user.setPasswordHash(passwordHash);
-        user.setUpdatedAt(LocalDateTime.now());
-        appUserMapper.updateById(user);
+        appUserMapper.update(null, new LambdaUpdateWrapper<AppUser>()
+                .eq(AppUser::getId, userId)
+                .set(AppUser::getPasswordHash, passwordHash)
+                .set(AppUser::getUpdatedAt, LocalDateTime.now()));
     }
 
     public String normalizeEmail(String email) {
@@ -187,11 +185,12 @@ public class AppUserService {
             wrapper.eq(AppUser::getStatus, status.trim().toUpperCase());
         }
 
-        long total = appUserMapper.selectCount(wrapper);
-        List<AppUser> users = total == 0
-                ? Collections.emptyList()
-                : appUserMapper.selectList(wrapper.orderByDesc(AppUser::getCreatedAt, AppUser::getId)
-                .last("LIMIT " + ((safePage - 1) * safeSize) + ", " + safeSize));
+        Page<AppUser> resultPage = appUserMapper.selectPage(
+                new Page<>(safePage, safeSize),
+                wrapper.orderByDesc(AppUser::getCreatedAt, AppUser::getId)
+        );
+        long total = resultPage.getTotal();
+        List<AppUser> users = total == 0 ? Collections.emptyList() : resultPage.getRecords();
         return new PagedResponse<>(total, safePage, safeSize, users.stream().map(this::toAdminUserItem).toList());
     }
 

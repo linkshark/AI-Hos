@@ -1,8 +1,12 @@
 package com.linkjb.aimed.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.linkjb.aimed.bean.AuditLogItem;
 import com.linkjb.aimed.bean.PagedResponse;
+import com.linkjb.aimed.bean.chat.ChatStreamMetadata;
 import com.linkjb.aimed.config.TraceIdProvider;
 import com.linkjb.aimed.entity.AppUser;
 import com.linkjb.aimed.entity.AuditLog;
@@ -25,6 +29,7 @@ public class AuditLogService {
     public static final String TARGET_AUTH = "AUTH";
     public static final String TARGET_KNOWLEDGE = "KNOWLEDGE";
     public static final String TARGET_CHAT = "CHAT";
+    public static final String TARGET_MCP = "MCP";
 
     public static final String ACTION_AUTH_REGISTER = "AUTH_REGISTER";
     public static final String ACTION_AUTH_LOGIN = "AUTH_LOGIN";
@@ -40,18 +45,28 @@ public class AuditLogService {
     public static final String ACTION_KNOWLEDGE_PUBLISH = "KNOWLEDGE_PUBLISH";
     public static final String ACTION_KNOWLEDGE_ARCHIVE = "KNOWLEDGE_ARCHIVE";
     public static final String ACTION_KNOWLEDGE_REPROCESS = "KNOWLEDGE_REPROCESS";
+    public static final String ACTION_KNOWLEDGE_METADATA_BACKFILL_PREVIEW = "KNOWLEDGE_METADATA_BACKFILL_PREVIEW";
+    public static final String ACTION_KNOWLEDGE_METADATA_BACKFILL_APPLY = "KNOWLEDGE_METADATA_BACKFILL_APPLY";
+    public static final String ACTION_KNOWLEDGE_RETRIEVAL_DIAGNOSE = "KNOWLEDGE_RETRIEVAL_DIAGNOSE";
     public static final String ACTION_CHAT_SUMMARY = "CHAT_SUMMARY";
+    public static final String ACTION_MCP_SERVER_CREATE = "MCP_SERVER_CREATE";
+    public static final String ACTION_MCP_SERVER_UPDATE = "MCP_SERVER_UPDATE";
+    public static final String ACTION_MCP_SERVER_DELETE = "MCP_SERVER_DELETE";
+    public static final String ACTION_MCP_SERVER_TEST = "MCP_SERVER_TEST";
 
     private final AuditLogMapper auditLogMapper;
     private final AppUserService appUserService;
     private final TraceIdProvider traceIdProvider;
+    private final ObjectMapper objectMapper;
 
     public AuditLogService(AuditLogMapper auditLogMapper,
                            AppUserService appUserService,
-                           TraceIdProvider traceIdProvider) {
+                           TraceIdProvider traceIdProvider,
+                           ObjectMapper objectMapper) {
         this.auditLogMapper = auditLogMapper;
         this.appUserService = appUserService;
         this.traceIdProvider = traceIdProvider;
+        this.objectMapper = objectMapper;
     }
 
     public void recordAuthAction(Long actorUserId,
@@ -78,6 +93,14 @@ public class AuditLogService {
         record(actorUserId, actorRole, actionType, TARGET_KNOWLEDGE, targetId, summary, null, null, null, null, null, null);
     }
 
+    public void recordMcpAction(Long actorUserId,
+                                String actorRole,
+                                String actionType,
+                                String targetId,
+                                String summary) {
+        record(actorUserId, actorRole, actionType, TARGET_MCP, targetId, summary, null, null, null, null, null, null);
+    }
+
     public void recordChatSummary(Long actorUserId,
                                   String actorRole,
                                   Long memoryId,
@@ -85,15 +108,15 @@ public class AuditLogService {
                                   long durationMs,
                                   boolean hasAttachments,
                                   String traceId,
-                                  HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary) {
+                                  ChatStreamMetadata streamMetadata) {
         String summary = "会话 #" + memoryId + " 使用 " + provider + (hasAttachments ? " 发起附件问答" : " 发起文本问答");
-        if (retrievalSummary != null) {
-            summary += "，关键词 " + retrievalSummary.retrievedCountKeyword()
-                    + " / 向量 " + retrievalSummary.retrievedCountVector()
-                    + " / 引用 " + retrievalSummary.finalHits().size();
+        if (streamMetadata != null) {
+            summary += "，关键词 " + streamMetadata.getRetrievedCountKeyword()
+                    + " / 向量 " + streamMetadata.getRetrievedCountVector()
+                    + " / 引用 " + streamMetadata.getFinalCitationCount();
         }
         record(actorUserId, actorRole, ACTION_CHAT_SUMMARY, TARGET_CHAT, String.valueOf(memoryId), summary,
-                traceId, memoryId, provider, durationMs, hasAttachments, retrievalSummary);
+                traceId, memoryId, provider, durationMs, hasAttachments, streamMetadata);
     }
 
     public PagedResponse<AuditLogItem> listLogs(int page,
@@ -139,11 +162,12 @@ public class AuditLogService {
             wrapper.le(AuditLog::getCreatedAt, createdTo);
         }
 
-        long total = auditLogMapper.selectCount(wrapper);
-        List<AuditLog> records = total == 0
-                ? Collections.emptyList()
-                : auditLogMapper.selectList(wrapper.orderByDesc(AuditLog::getCreatedAt, AuditLog::getId)
-                .last("LIMIT " + ((safePage - 1) * safeSize) + ", " + safeSize));
+        Page<AuditLog> resultPage = auditLogMapper.selectPage(
+                new Page<>(safePage, safeSize),
+                wrapper.orderByDesc(AuditLog::getCreatedAt, AuditLog::getId)
+        );
+        long total = resultPage.getTotal();
+        List<AuditLog> records = total == 0 ? Collections.emptyList() : resultPage.getRecords();
 
         Set<Long> actorIds = records.stream()
                 .map(AuditLog::getActorUserId)
@@ -172,7 +196,10 @@ public class AuditLogService {
                         log.getEmptyRecall(),
                         log.getTopDocHashes(),
                         log.getDurationMs(),
+                        log.getFirstTokenLatencyMs(),
                         log.getHasAttachments(),
+                        log.getToolMode(),
+                        log.getTraceTimelineJson(),
                         log.getCreatedAt()
                 ))
                 .toList();
@@ -191,7 +218,7 @@ public class AuditLogService {
                         String provider,
                         Long durationMs,
                         Boolean hasAttachments,
-                        HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary) {
+                        ChatStreamMetadata streamMetadata) {
         AuditLog log = new AuditLog();
         log.setActorUserId(actorUserId);
         log.setActorRole(actorRole);
@@ -202,24 +229,33 @@ public class AuditLogService {
         log.setTraceId(StringUtils.hasText(traceId) ? traceId : traceIdProvider.currentTraceId());
         log.setMemoryId(memoryId);
         log.setProvider(provider);
-        if (retrievalSummary != null) {
-            log.setQueryType(retrievalSummary.queryType());
-            log.setRetrievedCountKeyword(retrievalSummary.retrievedCountKeyword());
-            log.setRetrievedCountVector(retrievalSummary.retrievedCountVector());
-            log.setMergedCount(retrievalSummary.mergedCount());
-            log.setFinalCitationCount(retrievalSummary.finalHits().size());
-            log.setEmptyRecall(retrievalSummary.emptyRecall());
+        if (streamMetadata != null) {
+            log.setQueryType(streamMetadata.getQueryType());
+            log.setRetrievedCountKeyword(streamMetadata.getRetrievedCountKeyword());
+            log.setRetrievedCountVector(streamMetadata.getRetrievedCountVector());
+            log.setMergedCount(streamMetadata.getMergedCount());
+            log.setFinalCitationCount(streamMetadata.getFinalCitationCount());
+            log.setEmptyRecall(streamMetadata.isEmptyRecall());
             log.setTopDocHashes(String.join(",",
-                    retrievalSummary.finalHits().stream()
-                            .map(HybridKnowledgeRetrieverService.RetrievedChunk::fileHash)
-                            .filter(StringUtils::hasText)
-                            .distinct()
-                            .limit(5)
-                            .toList()));
+                    streamMetadata.getTopDocHashes() == null ? List.<String>of() : streamMetadata.getTopDocHashes()));
+            log.setFirstTokenLatencyMs(streamMetadata.getFirstTokenLatencyMs());
+            log.setToolMode(streamMetadata.getToolMode());
+            log.setTraceTimelineJson(writeTraceTimeline(streamMetadata));
         }
         log.setDurationMs(durationMs);
         log.setHasAttachments(hasAttachments);
         auditLogMapper.insert(log);
+    }
+
+    private String writeTraceTimeline(ChatStreamMetadata streamMetadata) {
+        if (streamMetadata == null || streamMetadata.getTraceStages() == null || streamMetadata.getTraceStages().isEmpty()) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(streamMetadata.getTraceStages());
+        } catch (JsonProcessingException exception) {
+            return null;
+        }
     }
 
     private String toActorLabel(AppUser user) {

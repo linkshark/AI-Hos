@@ -10,7 +10,8 @@ public class AppSecurityProperties {
 
     private List<String> allowedOriginPatterns = new ArrayList<>(List.of(
             "http://localhost:*",
-            "http://127.0.0.1:*"
+            "http://127.0.0.1:*",
+            "http://shenchaoqi.x3322.net:*"
     ));
 
     public List<String> getAllowedOriginPatterns() {

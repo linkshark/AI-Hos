@@ -25,6 +25,14 @@ class KnowledgeSearchLexiconTest {
     }
 
     @Test
+    void shouldExpandDoctorYearAndVersionTokens() {
+        List<String> tokens = KnowledgeSearchLexicon.expandQueryTokens("李兰娟院士挂号 2024年版指南");
+        assertTrue(tokens.contains("李兰娟"));
+        assertTrue(tokens.contains("2024年"));
+        assertTrue(tokens.contains("2024年版"));
+    }
+
+    @Test
     void shouldBuildKeywordSeedWithSynonyms() {
         String keywordSeed = KnowledgeSearchLexicon.buildKeywordSeed(
                 "肝胆胰外科门诊指南",

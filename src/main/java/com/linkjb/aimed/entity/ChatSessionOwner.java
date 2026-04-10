@@ -12,6 +12,11 @@ public class ChatSessionOwner {
     @TableId(type = IdType.INPUT)
     private Long memoryId;
     private Long userId;
+    private String customTitle;
+    private Boolean pinned;
+    private LocalDateTime pinnedAt;
+    private Boolean hidden;
+    private LocalDateTime hiddenAt;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
@@ -29,6 +34,46 @@ public class ChatSessionOwner {
 
     public void setUserId(Long userId) {
         this.userId = userId;
+    }
+
+    public String getCustomTitle() {
+        return customTitle;
+    }
+
+    public void setCustomTitle(String customTitle) {
+        this.customTitle = customTitle;
+    }
+
+    public Boolean getPinned() {
+        return pinned;
+    }
+
+    public void setPinned(Boolean pinned) {
+        this.pinned = pinned;
+    }
+
+    public LocalDateTime getPinnedAt() {
+        return pinnedAt;
+    }
+
+    public void setPinnedAt(LocalDateTime pinnedAt) {
+        this.pinnedAt = pinnedAt;
+    }
+
+    public Boolean getHidden() {
+        return hidden;
+    }
+
+    public void setHidden(Boolean hidden) {
+        this.hidden = hidden;
+    }
+
+    public LocalDateTime getHiddenAt() {
+        return hiddenAt;
+    }
+
+    public void setHiddenAt(LocalDateTime hiddenAt) {
+        this.hiddenAt = hiddenAt;
     }
 
     public LocalDateTime getCreatedAt() {

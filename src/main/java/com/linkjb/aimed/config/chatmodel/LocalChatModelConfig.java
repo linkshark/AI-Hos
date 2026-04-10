@@ -1,4 +1,4 @@
-package com.linkjb.aimed.config;
+package com.linkjb.aimed.config.chatmodel;
 
 import dev.langchain4j.http.client.jdk.JdkHttpClient;
 import dev.langchain4j.model.chat.ChatModel;

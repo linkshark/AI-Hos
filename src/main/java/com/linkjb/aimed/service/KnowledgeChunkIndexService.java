@@ -1,6 +1,7 @@
 package com.linkjb.aimed.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.linkjb.aimed.entity.KnowledgeChunkIndex;
 import com.linkjb.aimed.mapper.KnowledgeChunkIndexMapper;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
@@ -62,10 +63,9 @@ public class KnowledgeChunkIndexService {
         if (!StringUtils.hasText(hash)) {
             return;
         }
-        KnowledgeChunkIndex update = new KnowledgeChunkIndex();
-        update.setStatus(status);
-        knowledgeChunkIndexMapper.update(update, new LambdaQueryWrapper<KnowledgeChunkIndex>()
-                .eq(KnowledgeChunkIndex::getFileHash, hash));
+        knowledgeChunkIndexMapper.update(null, new LambdaUpdateWrapper<KnowledgeChunkIndex>()
+                .eq(KnowledgeChunkIndex::getFileHash, hash)
+                .set(KnowledgeChunkIndex::getStatus, status));
     }
 
     public void updateMetadataByHash(String hash,
@@ -82,32 +82,18 @@ public class KnowledgeChunkIndexService {
         if (!StringUtils.hasText(hash)) {
             return;
         }
-        jdbcTemplate.update("""
-                        UPDATE knowledge_chunk_index
-                        SET status = ?,
-                            title = ?,
-                            doc_type = ?,
-                            department = ?,
-                            audience = ?,
-                            version = ?,
-                            effective_at = ?,
-                            doctor_name = ?,
-                            source_priority = ?,
-                            keywords = ?
-                        WHERE file_hash = ?
-                        """,
-                status,
-                title,
-                docType,
-                department,
-                audience,
-                version,
-                effectiveAt,
-                doctorName,
-                sourcePriority == null ? 50 : sourcePriority,
-                keywords,
-                hash
-        );
+        knowledgeChunkIndexMapper.update(null, new LambdaUpdateWrapper<KnowledgeChunkIndex>()
+                .eq(KnowledgeChunkIndex::getFileHash, hash)
+                .set(KnowledgeChunkIndex::getStatus, status)
+                .set(KnowledgeChunkIndex::getTitle, title)
+                .set(KnowledgeChunkIndex::getDocType, docType)
+                .set(KnowledgeChunkIndex::getDepartment, department)
+                .set(KnowledgeChunkIndex::getAudience, audience)
+                .set(KnowledgeChunkIndex::getVersion, version)
+                .set(KnowledgeChunkIndex::getEffectiveAt, effectiveAt == null ? null : effectiveAt.toLocalDateTime())
+                .set(KnowledgeChunkIndex::getDoctorName, doctorName)
+                .set(KnowledgeChunkIndex::getSourcePriority, sourcePriority == null ? 50 : sourcePriority)
+                .set(KnowledgeChunkIndex::getKeywords, keywords));
     }
 
     private void batchInsert(List<KnowledgeChunkIndex> chunks) {

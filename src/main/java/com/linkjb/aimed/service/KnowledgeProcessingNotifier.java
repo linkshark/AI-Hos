@@ -3,7 +3,6 @@ package com.linkjb.aimed.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.linkjb.aimed.bean.KnowledgeProcessingMessage;
-import com.linkjb.aimed.websocket.KnowledgeWebSocketHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -13,11 +12,9 @@ public class KnowledgeProcessingNotifier {
     private static final Logger log = LoggerFactory.getLogger(KnowledgeProcessingNotifier.class);
 
     private final ObjectMapper objectMapper;
-    private final KnowledgeWebSocketHandler knowledgeWebSocketHandler;
 
-    public KnowledgeProcessingNotifier(ObjectMapper objectMapper, KnowledgeWebSocketHandler knowledgeWebSocketHandler) {
+    public KnowledgeProcessingNotifier(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
-        this.knowledgeWebSocketHandler = knowledgeWebSocketHandler;
     }
 
     public void notifyQueued(String hash, String originalFilename, String message) {
@@ -64,7 +61,8 @@ public class KnowledgeProcessingNotifier {
         payload.setCurrentBatch(currentBatch);
         payload.setTotalBatches(totalBatches);
         try {
-            knowledgeWebSocketHandler.broadcast(objectMapper.writeValueAsString(payload));
+            // 前端已经切到轮询主链，这里保留统一的处理事件封装，仅作为日志落点，避免继续维护一条已废弃的 WebSocket 通知链。
+            log.debug("knowledge.processing.event {}", objectMapper.writeValueAsString(payload));
         } catch (JsonProcessingException e) {
             log.warn("知识库处理通知序列化失败, hash={}", hash, e);
         }

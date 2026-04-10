@@ -22,7 +22,10 @@ public record AuditLogItem(
         Boolean emptyRecall,
         String topDocHashes,
         Long durationMs,
+        Long firstTokenLatencyMs,
         Boolean hasAttachments,
+        String toolMode,
+        String traceTimelineJson,
         LocalDateTime createdAt
 ) {
 }

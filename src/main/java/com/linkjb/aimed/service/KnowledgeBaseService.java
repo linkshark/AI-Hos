@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.linkjb.aimed.bean.KnowledgeChunkInfo;
 import com.linkjb.aimed.bean.KnowledgeDocumentDetail;
 import com.linkjb.aimed.bean.KnowledgeFileInfo;
+import com.linkjb.aimed.bean.KnowledgeMetadataBackfillItem;
+import com.linkjb.aimed.bean.KnowledgeMetadataBackfillResponse;
 import com.linkjb.aimed.bean.KnowledgeUploadItem;
 import com.linkjb.aimed.bean.KnowledgeUploadResponse;
 import com.linkjb.aimed.bean.KnowledgeUpdateRequest;
@@ -56,6 +58,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.function.Function;
 import java.util.stream.Stream;
 
 /**
@@ -79,18 +82,12 @@ public class KnowledgeBaseService {
     private static final String STATUS_FAILED = "FAILED";
     private static final String STATUS_ARCHIVED = "ARCHIVED";
     private static final String STATUS_PENDING_SYNC = "PENDING_SYNC";
-    private static final String AUDIENCE_BOTH = "BOTH";
-    private static final String DOC_TYPE_HOSPITAL_OVERVIEW = "HOSPITAL_OVERVIEW";
-    private static final String DOC_TYPE_DEPARTMENT = "DEPARTMENT";
-    private static final String DOC_TYPE_DOCTOR = "DOCTOR";
-    private static final String DOC_TYPE_GUIDE = "GUIDE";
-    private static final String DOC_TYPE_PROCESS = "PROCESS";
-    private static final String DOC_TYPE_NOTICE = "NOTICE";
-    private static final String DOC_TYPE_DEVICE = "DEVICE";
     private static final Set<String> DIRECT_TEXT_EXTENSIONS = Set.of("md", "markdown", "txt", "csv");
     private static final Set<String> INLINE_EDITABLE_EXTENSIONS = Set.of("md", "markdown", "txt", "csv", "html", "htm", "xml");
     private static final Set<String> IMAGE_EXTENSIONS = Set.of("png", "jpg", "jpeg", "webp", "gif", "bmp");
-    private static final int MAX_CHAT_ATTACHMENTS = 5;
+    private static final int MAX_CHAT_ATTACHMENTS = 3;
+    private static final long MAX_SINGLE_CHAT_ATTACHMENT_BYTES = 1024L * 1024L;
+    private static final long MAX_TOTAL_CHAT_ATTACHMENT_BYTES = 2L * 1024L * 1024L;
     private static final int MAX_SINGLE_CHAT_ATTACHMENT_CHARACTERS = 8000;
     private static final int MAX_TOTAL_CHAT_ATTACHMENT_CHARACTERS = 18000;
     private static final int CHUNK_PREVIEW_LENGTH = 180;
@@ -111,16 +108,14 @@ public class KnowledgeBaseService {
     private final KnowledgeProcessingNotifier knowledgeProcessingNotifier;
     private final KnowledgeFileStatusService knowledgeFileStatusService;
     private final KnowledgeChunkIndexService knowledgeChunkIndexService;
+    private final KnowledgeMetadataService knowledgeMetadataService;
+    private final KnowledgeIndexingService knowledgeIndexingService;
     private final ObjectMapper objectMapper;
     private final Set<String> ingestedHashes = ConcurrentHashMap.newKeySet();
     private final Map<String, KnowledgeDocumentRecord> knowledgeRecords = new ConcurrentHashMap<>();
     private final Object embeddingStoreMonitor = new Object();
     // 统一 embedding 模型后，知识恢复和上传共用同一台 Ollama；串行化可避免 CPU 模型被并发压垮。
     private final Object embeddingExecutionMonitor = new Object();
-    private final int defaultChunkSize;
-    private final int defaultChunkOverlap;
-    private final int maxChunkSize;
-    private final int maxSegmentsPerDocument;
     private final int embeddingBatchSize;
     private final String embeddingModelName;
     private final boolean embeddingBuildEnabled;
@@ -136,11 +131,9 @@ public class KnowledgeBaseService {
                                 KnowledgeProcessingNotifier knowledgeProcessingNotifier,
                                 KnowledgeFileStatusService knowledgeFileStatusService,
                                 KnowledgeChunkIndexService knowledgeChunkIndexService,
+                                KnowledgeMetadataService knowledgeMetadataService,
+                                KnowledgeIndexingService knowledgeIndexingService,
                                 ObjectMapper objectMapper,
-                                @Value("${app.knowledge-base.chunk-size:1000}") int defaultChunkSize,
-                                @Value("${app.knowledge-base.chunk-overlap:150}") int defaultChunkOverlap,
-                                @Value("${app.knowledge-base.max-chunk-size:4000}") int maxChunkSize,
-                                @Value("${app.knowledge-base.max-segments-per-document:1200}") int maxSegmentsPerDocument,
                                 @Value("${app.embedding.batch-size:24}") int embeddingBatchSize,
                                 @Value("${app.embedding.model-name:bge-m3:latest}") String embeddingModelName,
                                 @Value("${app.knowledge-base.embedding-build-enabled:true}") boolean embeddingBuildEnabled,
@@ -152,11 +145,9 @@ public class KnowledgeBaseService {
         this.knowledgeProcessingNotifier = knowledgeProcessingNotifier;
         this.knowledgeFileStatusService = knowledgeFileStatusService;
         this.knowledgeChunkIndexService = knowledgeChunkIndexService;
+        this.knowledgeMetadataService = knowledgeMetadataService;
+        this.knowledgeIndexingService = knowledgeIndexingService;
         this.objectMapper = objectMapper;
-        this.defaultChunkSize = Math.max(300, defaultChunkSize);
-        this.defaultChunkOverlap = Math.max(0, defaultChunkOverlap);
-        this.maxChunkSize = Math.max(this.defaultChunkSize, maxChunkSize);
-        this.maxSegmentsPerDocument = Math.max(50, maxSegmentsPerDocument);
         this.embeddingBatchSize = Math.max(1, embeddingBatchSize);
         this.embeddingModelName = embeddingModelName;
         this.embeddingBuildEnabled = embeddingBuildEnabled;
@@ -245,9 +236,9 @@ public class KnowledgeBaseService {
             if (!metadataMissing && !legacyReady) {
                 continue;
             }
-            FileMetadata mergedMetadata = mergeMetadata(
+            KnowledgeFileMetadata mergedMetadata = mergeMetadata(
                     buildDefaultMetadata(status.getOriginalFilename(), status.getSource(), status.getExtension()),
-                    new FileMetadata(
+                    new KnowledgeFileMetadata(
                             status.getDocType(),
                             status.getDepartment(),
                             status.getAudience(),
@@ -329,6 +320,126 @@ public class KnowledgeBaseService {
             throw new IOException("未找到对应的知识文件");
         }
         return toKnowledgeDetail(status);
+    }
+
+    public synchronized KnowledgeMetadataBackfillResponse backfillMetadata(List<String> hashes, boolean previewOnly) {
+        List<KnowledgeFileStatus> targets = resolveBackfillTargets(hashes);
+        List<KnowledgeMetadataBackfillItem> items = new ArrayList<>(targets.size());
+        int matchedCount = 0;
+        int updatedCount = 0;
+
+        for (KnowledgeFileStatus status : targets) {
+            KnowledgeMetadataService.MetadataBackfillPlan plan = knowledgeMetadataService.buildBackfillPlan(status);
+            boolean hasChanges = !plan.changes().isEmpty();
+            if (hasChanges) {
+                matchedCount++;
+            }
+            boolean updated = false;
+            if (hasChanges && !previewOnly) {
+                applyMetadataPlan(status, plan.metadata());
+                updated = true;
+                updatedCount++;
+            }
+            items.add(new KnowledgeMetadataBackfillItem(
+                    status.getHash(),
+                    status.getOriginalFilename(),
+                    status.getProcessingStatus(),
+                    updated,
+                    plan.changes(),
+                    plan.skippedReasons()
+            ));
+        }
+
+        return new KnowledgeMetadataBackfillResponse(
+                previewOnly,
+                targets.size(),
+                matchedCount,
+                updatedCount,
+                Math.max(0, targets.size() - matchedCount),
+                items
+        );
+    }
+
+    private List<KnowledgeFileStatus> resolveBackfillTargets(List<String> hashes) {
+        List<KnowledgeFileStatus> allStatuses = knowledgeFileStatusService.listAll();
+        if (hashes == null || hashes.isEmpty()) {
+            return allStatuses;
+        }
+        Set<String> requestedHashes = new LinkedHashSet<>();
+        hashes.stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .forEach(requestedHashes::add);
+        return allStatuses.stream()
+                .filter(status -> requestedHashes.contains(status.getHash()))
+                .toList();
+    }
+
+    private void applyMetadataPlan(KnowledgeFileStatus status, KnowledgeFileMetadata metadata) {
+        status.setTitle(metadata.title());
+        status.setDepartment(metadata.department());
+        status.setDoctorName(metadata.doctorName());
+        status.setKeywords(metadata.keywords());
+        knowledgeFileStatusService.saveOrUpdate(status);
+        knowledgeChunkIndexService.updateMetadataByHash(
+                status.getHash(),
+                status.getProcessingStatus(),
+                status.getTitle(),
+                status.getDocType(),
+                status.getDepartment(),
+                status.getAudience(),
+                status.getVersion(),
+                status.getEffectiveAt() == null ? null : java.sql.Timestamp.valueOf(status.getEffectiveAt()),
+                status.getDoctorName(),
+                status.getSourcePriority(),
+                status.getKeywords()
+        );
+
+        knowledgeRecords.computeIfPresent(status.getHash(), (ignored, existing) -> new KnowledgeDocumentRecord(
+                existing.fileName(),
+                existing.originalFilename(),
+                existing.hash(),
+                existing.source(),
+                existing.parser(),
+                existing.extension(),
+                existing.size(),
+                existing.editable(),
+                existing.deletable(),
+                existing.processingStatus(),
+                existing.statusMessage(),
+                existing.progressPercent(),
+                existing.currentBatch(),
+                existing.totalBatches(),
+                existing.docType(),
+                status.getDepartment(),
+                existing.audience(),
+                existing.version(),
+                existing.effectiveAt(),
+                status.getTitle(),
+                status.getDoctorName(),
+                existing.sourcePriority(),
+                status.getKeywords(),
+                existing.extractedText(),
+                existing.chunks(),
+                existing.storagePath()
+        ));
+
+        if (!isSearchableStatus(status.getProcessingStatus())) {
+            return;
+        }
+
+        List<KnowledgeChunkIndex> chunkIndexes = knowledgeChunkIndexService.listByHash(status.getHash());
+        if (chunkIndexes.isEmpty()) {
+            return;
+        }
+        synchronized (embeddingStoreMonitor) {
+            removeEmbeddingsByHash(status.getHash());
+            restoreEmbeddingsToStore(
+                    chunkIndexes.stream().map(KnowledgeChunkIndex::getSegmentId).toList(),
+                    toSegments(chunkIndexes),
+                    chunkIndexes
+            );
+        }
     }
 
     public synchronized KnowledgeDocumentDetail publishKnowledge(String hash) throws IOException {
@@ -432,8 +543,8 @@ public class KnowledgeBaseService {
             ingestedHashes.remove(hash);
             knowledgeRecords.remove(hash);
             ParsedKnowledge parsedKnowledge = parseFile(storedFile, record.originalFilename(), newHash);
-            FileMetadata metadata = mergeMetadata(buildDefaultMetadata(record.originalFilename(), record.source(), record.extension()),
-                    new FileMetadata(
+            KnowledgeFileMetadata metadata = mergeMetadata(buildDefaultMetadata(record.originalFilename(), record.source(), record.extension()),
+                    new KnowledgeFileMetadata(
                             request == null ? record.docType() : request.getDocType(),
                             request == null ? record.department() : request.getDepartment(),
                             request == null ? record.audience() : request.getAudience(),
@@ -495,12 +606,9 @@ public class KnowledgeBaseService {
     }
 
     public String buildChatAttachmentTextContext(MultipartFile[] files) throws IOException {
+        validateChatAttachments(files);
         if (files == null || files.length == 0) {
             return "";
-        }
-
-        if (files.length > MAX_CHAT_ATTACHMENTS) {
-            throw new IOException("单次对话最多上传 " + MAX_CHAT_ATTACHMENTS + " 个文件");
         }
 
         List<ChatAttachmentContent> attachmentContents = new ArrayList<>();
@@ -558,6 +666,7 @@ public class KnowledgeBaseService {
     }
 
     public boolean hasImageAttachments(MultipartFile[] files) throws IOException {
+        validateChatAttachments(files);
         if (files == null) {
             return false;
         }
@@ -576,6 +685,35 @@ public class KnowledgeBaseService {
             }
         }
         return false;
+    }
+
+    private void validateChatAttachments(MultipartFile[] files) throws IOException {
+        if (files == null || files.length == 0) {
+            return;
+        }
+        int nonEmptyCount = 0;
+        long totalBytes = 0L;
+        for (MultipartFile file : files) {
+            if (file == null || file.isEmpty()) {
+                continue;
+            }
+            nonEmptyCount++;
+            String originalFilename = StringUtils.hasText(file.getOriginalFilename()) ? file.getOriginalFilename() : "unnamed";
+            if (nonEmptyCount > MAX_CHAT_ATTACHMENTS) {
+                throw new IOException("单次对话最多上传 " + MAX_CHAT_ATTACHMENTS + " 个附件");
+            }
+            if (file.getSize() > MAX_SINGLE_CHAT_ATTACHMENT_BYTES) {
+                throw new IOException("单个附件大小不能超过 1MB: " + originalFilename);
+            }
+            totalBytes += Math.max(0L, file.getSize());
+            if (totalBytes > MAX_TOTAL_CHAT_ATTACHMENT_BYTES) {
+                throw new IOException("聊天附件总大小不能超过 2MB");
+            }
+            String extension = getExtension(originalFilename);
+            if (!CHAT_ATTACHMENT_EXTENSIONS.contains(extension)) {
+                throw new IOException("聊天附件暂不支持该格式: " + originalFilename);
+            }
+        }
     }
 
     public boolean isImageAttachment(MultipartFile file) {
@@ -845,7 +983,7 @@ public class KnowledgeBaseService {
                                          int progressPercent,
                                          int currentBatch,
                                          int totalBatches,
-                                         FileMetadata fileMetadata) {
+                                         KnowledgeFileMetadata fileMetadata) {
         List<TextSegment> segments = splitDocument(document);
         if (segments.isEmpty()) {
             throw new IllegalStateException("知识文件切分结果为空");
@@ -861,7 +999,7 @@ public class KnowledgeBaseService {
         int stageBatchCount = calculateBatchCount(segments.size(), embeddingBatchSize);
         int effectiveTotalBatches = Math.max(totalBatches, stageBatchCount);
 
-        FileMetadata effectiveMetadata = mergeMetadata(buildDefaultMetadata(originalFilename, source, extension), fileMetadata);
+        KnowledgeFileMetadata effectiveMetadata = mergeMetadata(buildDefaultMetadata(originalFilename, source, extension), fileMetadata);
         List<Embedding> embeddings = List.of();
         List<KnowledgeChunkIndex> chunkIndexes = buildChunkIndexes(hash, segments, List.of(), processingStatus, effectiveMetadata);
         KnowledgeDocumentRecord initialRecord = new KnowledgeDocumentRecord(
@@ -952,7 +1090,7 @@ public class KnowledgeBaseService {
                                                     boolean editable,
                                                     boolean deletable,
                                                     Path storagePath) {
-        FileMetadata metadata = buildDefaultMetadata(originalFilename, source, extension);
+        KnowledgeFileMetadata metadata = buildDefaultMetadata(originalFilename, source, extension);
         KnowledgeDocumentRecord record = new KnowledgeDocumentRecord(
                 fileName,
                 originalFilename,
@@ -995,7 +1133,7 @@ public class KnowledgeBaseService {
                                                     boolean deletable,
                                                     Path storagePath,
                                                     String statusMessage) {
-        FileMetadata metadata = buildDefaultMetadata(originalFilename, source, extension);
+        KnowledgeFileMetadata metadata = buildDefaultMetadata(originalFilename, source, extension);
         KnowledgeDocumentRecord record = new KnowledgeDocumentRecord(
                 fileName,
                 originalFilename,
@@ -1376,78 +1514,27 @@ public class KnowledgeBaseService {
     }
 
     private boolean hasMissingEmbedding(List<KnowledgeChunkIndex> chunkIndexes) {
-        for (KnowledgeChunkIndex chunkIndex : chunkIndexes) {
-            if (!StringUtils.hasText(chunkIndex.getEmbedding())) {
-                return true;
-            }
-        }
-        return false;
+        return knowledgeIndexingService.hasMissingEmbedding(chunkIndexes);
     }
 
     private void applyEmbeddings(List<KnowledgeChunkIndex> chunkIndexes, List<Embedding> embeddings) {
-        for (int i = 0; i < chunkIndexes.size() && i < embeddings.size(); i++) {
-            chunkIndexes.get(i).setEmbedding(serializeEmbedding(embeddings.get(i)));
-        }
+        knowledgeIndexingService.applyEmbeddings(chunkIndexes, embeddings);
     }
 
     private List<KnowledgeChunkInfo> buildChunkInfos(List<TextSegment> segments) {
-        List<KnowledgeChunkInfo> chunks = new ArrayList<>(segments.size());
-        for (int i = 0; i < segments.size(); i++) {
-            TextSegment segment = segments.get(i);
-            KnowledgeChunkInfo chunk = new KnowledgeChunkInfo();
-            chunk.setIndex(i + 1);
-            chunk.setContent(segment.text());
-            chunk.setCharacterCount(segment.text().length());
-            chunk.setPreview(buildPreview(segment.text()));
-            chunks.add(chunk);
-        }
-        return chunks;
+        return knowledgeIndexingService.buildChunkInfos(segments);
     }
 
     private List<KnowledgeChunkInfo> toChunkInfos(List<KnowledgeChunkIndex> indexes) {
-        List<KnowledgeChunkInfo> chunks = new ArrayList<>(indexes.size());
-        for (KnowledgeChunkIndex index : indexes) {
-            KnowledgeChunkInfo chunk = new KnowledgeChunkInfo();
-            chunk.setIndex(index.getSegmentIndex() == null ? 0 : index.getSegmentIndex());
-            chunk.setContent(index.getContent());
-            chunk.setCharacterCount(index.getCharacterCount() == null ? 0 : index.getCharacterCount());
-            chunk.setPreview(index.getPreview());
-            chunks.add(chunk);
-        }
-        return chunks;
+        return knowledgeIndexingService.toChunkInfos(indexes);
     }
 
     private List<KnowledgeChunkIndex> buildChunkIndexes(String hash,
                                                         List<TextSegment> segments,
                                                         List<Embedding> embeddings,
                                                         String status,
-                                                        FileMetadata fileMetadata) {
-        List<KnowledgeChunkIndex> indexes = new ArrayList<>(segments.size());
-        for (int i = 0; i < segments.size(); i++) {
-            TextSegment segment = segments.get(i);
-            KnowledgeChunkIndex index = new KnowledgeChunkIndex();
-            index.setFileHash(hash);
-            index.setSegmentId(hash + "-segment-" + (i + 1));
-            index.setSegmentIndex(i + 1);
-            index.setContent(segment.text());
-            index.setPreview(buildPreview(segment.text()));
-            index.setCharacterCount(segment.text().length());
-            if (i < embeddings.size()) {
-                index.setEmbedding(serializeEmbedding(embeddings.get(i)));
-            }
-            index.setTitle(fileMetadata.title());
-            index.setDocType(fileMetadata.docType());
-            index.setDepartment(fileMetadata.department());
-            index.setAudience(fileMetadata.audience());
-            index.setVersion(fileMetadata.version());
-            index.setEffectiveAt(fileMetadata.effectiveAt());
-            index.setStatus(status);
-            index.setDoctorName(fileMetadata.doctorName());
-            index.setSourcePriority(fileMetadata.sourcePriority());
-            index.setKeywords(fileMetadata.keywords());
-            indexes.add(index);
-        }
-        return indexes;
+                                                        KnowledgeFileMetadata fileMetadata) {
+        return knowledgeIndexingService.buildChunkIndexes(hash, segments, embeddings, status, fileMetadata);
     }
 
     /**
@@ -1457,77 +1544,13 @@ public class KnowledgeBaseService {
      * 之所以不直接在数据库里查询原始字符串去拼，是为了保证在线检索和启动恢复共用同一套 metadata 口径。
      */
     private List<TextSegment> toSegments(List<KnowledgeChunkIndex> chunkIndexes) {
-        List<TextSegment> segments = new ArrayList<>(chunkIndexes.size());
-        for (KnowledgeChunkIndex index : chunkIndexes) {
-            segments.add(TextSegment.from(index.getContent(), buildSegmentMetadata(
-                    index.getFileHash(),
-                    "uploaded",
-                    null,
-                    index.getStatus(),
-                    new FileMetadata(
-                            index.getDocType(),
-                            index.getDepartment(),
-                            index.getAudience(),
-                            index.getVersion(),
-                            index.getEffectiveAt(),
-                            index.getTitle(),
-                            index.getDoctorName(),
-                            index.getSourcePriority(),
-                            index.getKeywords()
-                    )
-            )));
-        }
-        return segments;
+        return knowledgeIndexingService.toSegments(chunkIndexes);
     }
 
     private void restoreEmbeddingsToStore(List<String> segmentIds,
                                           List<TextSegment> segments,
                                           List<KnowledgeChunkIndex> chunkIndexes) {
-        List<Embedding> embeddings = new ArrayList<>(chunkIndexes.size());
-        List<TextSegment> availableSegments = new ArrayList<>(chunkIndexes.size());
-        List<String> availableSegmentIds = new ArrayList<>(chunkIndexes.size());
-        for (int i = 0; i < chunkIndexes.size(); i++) {
-            String serialized = chunkIndexes.get(i).getEmbedding();
-            if (!StringUtils.hasText(serialized)) {
-                continue;
-            }
-            embeddings.add(deserializeEmbedding(serialized));
-            availableSegments.add(segments.get(i));
-            availableSegmentIds.add(segmentIds.get(i));
-        }
-        if (embeddings.isEmpty()) {
-            return;
-        }
-        embeddingStore.addAll(availableSegmentIds, embeddings, availableSegments);
-    }
-
-    private String serializeEmbedding(Embedding embedding) {
-        if (embedding == null) {
-            return null;
-        }
-        try {
-            return objectMapper.writeValueAsString(embedding.vectorAsList());
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("序列化 embedding 失败", e);
-        }
-    }
-
-    private Embedding deserializeEmbedding(String serialized) {
-        try {
-            return Embedding.from(objectMapper.readValue(serialized, float[].class));
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("反序列化 embedding 失败", e);
-        }
-    }
-
-    private String buildPreview(String text) {
-        if (!StringUtils.hasText(text)) {
-            return "";
-        }
-        if (text.length() <= CHUNK_PREVIEW_LENGTH) {
-            return text;
-        }
-        return text.substring(0, CHUNK_PREVIEW_LENGTH) + "...";
+        knowledgeIndexingService.restoreEmbeddingsToStore(embeddingStore, segmentIds, segments, chunkIndexes);
     }
 
     private String getExtension(String filename) {
@@ -1599,25 +1622,7 @@ public class KnowledgeBaseService {
     }
 
     private List<TextSegment> splitDocument(Document document) {
-        int chunkSize = defaultChunkSize;
-        //默认重叠块(150)与 默认块大小 chunkSize(1000/3)取最小值
-        int chunkOverlap = Math.min(defaultChunkOverlap, Math.max(0, chunkSize / 3));
-        List<TextSegment> segments = createSplitter(chunkSize, chunkOverlap).split(document);
-        // 对超大文档逐步放大 chunk，优先把切片数量控制在可接受范围内，避免 embedding 爆量。
-        while (segments.size() > maxSegmentsPerDocument && chunkSize < maxChunkSize) {
-            int nextChunkSize = Math.min(maxChunkSize, chunkSize * 2);
-            if (nextChunkSize == chunkSize) {
-                break;
-            }
-            chunkSize = nextChunkSize;
-            chunkOverlap = Math.min(Math.max(50, chunkOverlap * 2), Math.max(0, chunkSize / 4));
-            segments = createSplitter(chunkSize, chunkOverlap).split(document);
-        }
-        return segments;
-    }
-
-    private DocumentSplitter createSplitter(int chunkSize, int chunkOverlap) {
-        return DocumentSplitters.recursive(chunkSize, chunkOverlap);
+        return knowledgeIndexingService.splitDocument(document);
     }
         //
     private List<dev.langchain4j.data.embedding.Embedding> embedSegmentsInBatches(String hash,
@@ -1629,7 +1634,7 @@ public class KnowledgeBaseService {
         List<dev.langchain4j.data.embedding.Embedding> embeddings = new ArrayList<>(segments.size());
         int batchSize = resolveBatchSize(embeddingModel);
         int stageBatchCount = calculateBatchCount(segments.size(), batchSize);
-        // 分批 embedding 是为了限制单次请求体积，并让前端能看到真实批次进度(websocket 通知进度)
+        // 分批 embedding 是为了限制单次请求体积，并让前端轮询时能看到真实批次进度
         for (int batchIndex = 0; batchIndex < stageBatchCount; batchIndex++) {
             int start = batchIndex * batchSize;
             int end = Math.min(start + batchSize, segments.size());
@@ -1764,38 +1769,8 @@ public class KnowledgeBaseService {
      * 这里的目标不是 100% 准确，而是让新上传文件在没人手工补 metadata 时，也至少能带着基础分类进入检索链。
      * 后续管理员再通过知识库页补齐更精细的科室、医生、版本、关键词等信息。
      */
-    private FileMetadata buildDefaultMetadata(String originalFilename, String source, String extension) {
-        String normalizedName = originalFilename == null ? "" : originalFilename.toLowerCase(Locale.ROOT);
-        String docType = DOC_TYPE_HOSPITAL_OVERVIEW;
-        if (normalizedName.contains("科室") || normalizedName.contains("门诊") || normalizedName.contains("中心")) {
-            docType = DOC_TYPE_DEPARTMENT;
-        } else if (normalizedName.contains("医生") || normalizedName.contains("专家") || normalizedName.contains("院士")) {
-            docType = DOC_TYPE_DOCTOR;
-        } else if (normalizedName.contains("指南") || normalizedName.contains("共识") || normalizedName.contains("规范")) {
-            docType = DOC_TYPE_GUIDE;
-        } else if (normalizedName.contains("流程") || normalizedName.contains("预约") || normalizedName.contains("就诊") || normalizedName.contains("挂号")) {
-            docType = DOC_TYPE_PROCESS;
-        } else if (normalizedName.contains("公告") || normalizedName.contains("通知")) {
-            docType = DOC_TYPE_NOTICE;
-        } else if (normalizedName.contains("设备")) {
-            docType = DOC_TYPE_DEVICE;
-        }
-        String title = StringUtils.hasText(originalFilename) ? originalFilename : "未命名知识文件";
-        int sourcePriority = "bundled".equals(source) ? 100 : 60;
-        String department = KnowledgeSearchLexicon.inferDepartment(title);
-        String doctorName = KnowledgeSearchLexicon.inferDoctorName(title);
-        String keywordSeed = KnowledgeSearchLexicon.buildKeywordSeed(title, extension, docType, department, doctorName);
-        return new FileMetadata(
-                docType,
-                department,
-                AUDIENCE_BOTH,
-                "v1",
-                null,
-                title,
-                doctorName,
-                sourcePriority,
-                keywordSeed
-        );
+    private KnowledgeFileMetadata buildDefaultMetadata(String originalFilename, String source, String extension) {
+        return knowledgeMetadataService.buildDefaultMetadata(originalFilename, source, extension);
     }
 
     /**
@@ -1807,80 +1782,12 @@ public class KnowledgeBaseService {
      *
      * 这样既能保留系统自动推断的便利，又不会把管理员已经修正过的 metadata 覆盖掉。
      */
-    private FileMetadata mergeMetadata(FileMetadata base, FileMetadata override) {
-        if (override == null) {
-            return base;
-        }
-        return new FileMetadata(
-                pickText(override.docType(), base.docType()),
-                pickText(override.department(), base.department()),
-                pickText(override.audience(), base.audience()),
-                pickText(override.version(), base.version()),
-                override.effectiveAt() == null ? base.effectiveAt() : override.effectiveAt(),
-                pickText(override.title(), base.title()),
-                pickText(override.doctorName(), base.doctorName()),
-                override.sourcePriority() == null ? base.sourcePriority() : override.sourcePriority(),
-                pickText(override.keywords(), base.keywords())
-        );
-    }
-
-    private String pickText(String primary, String fallback) {
-        return StringUtils.hasText(primary) ? primary.trim() : fallback;
-    }
-
-    private String inferDepartment(String title) {
-        return KnowledgeSearchLexicon.inferDepartment(title);
-    }
-
-    private String inferDoctorName(String title) {
-        return KnowledgeSearchLexicon.inferDoctorName(title);
+    private KnowledgeFileMetadata mergeMetadata(KnowledgeFileMetadata base, KnowledgeFileMetadata override) {
+        return knowledgeMetadataService.mergeMetadata(base, override);
     }
 
     private LocalDateTime parseDateTime(String value) {
-        if (!StringUtils.hasText(value)) {
-            return null;
-        }
-        try {
-            return LocalDateTime.parse(value.trim());
-        } catch (DateTimeParseException exception) {
-            return null;
-        }
-    }
-
-    private Metadata buildSegmentMetadata(String hash,
-                                          String source,
-                                          String extension,
-                                          String status,
-                                          FileMetadata fileMetadata) {
-        Metadata metadata = new Metadata();
-        // 这里的 metadata 会直接进入 LangChain4j 和向量检索链，所以必须保证字段完整且不能写入 null。
-        // 一旦把 null 塞进去，后续检索时会在 Metadata.getString(...) 处直接抛异常，问题会非常隐蔽。
-        putMetadataIfPresent(metadata, "knowledge_hash", hash);
-        putMetadataIfPresent(metadata, "knowledge_source", source);
-        putMetadataIfPresent(metadata, "knowledge_extension", extension);
-        putMetadataIfPresent(metadata, "status", status);
-        putMetadataIfPresent(metadata, "doc_type", fileMetadata.docType());
-        putMetadataIfPresent(metadata, "department", fileMetadata.department());
-        putMetadataIfPresent(metadata, "audience", fileMetadata.audience());
-        putMetadataIfPresent(metadata, "version", fileMetadata.version());
-        putMetadataIfPresent(metadata, "title", fileMetadata.title());
-        putMetadataIfPresent(metadata, "document_name", fileMetadata.title());
-        putMetadataIfPresent(metadata, "doctor_name", fileMetadata.doctorName());
-        if (fileMetadata.sourcePriority() != null) {
-            metadata.put("source_priority", fileMetadata.sourcePriority());
-        }
-        putMetadataIfPresent(metadata, "keywords", fileMetadata.keywords());
-        if (fileMetadata.effectiveAt() != null) {
-            metadata.put("effective_at", fileMetadata.effectiveAt().toString());
-        }
-        return metadata;
-    }
-
-    private void putMetadataIfPresent(Metadata metadata, String key, String value) {
-        if (!StringUtils.hasText(value)) {
-            return;
-        }
-        metadata.put(key, value);
+        return knowledgeMetadataService.parseDateTime(value);
     }
 
     private List<TextSegment> enrichSegments(List<TextSegment> segments,
@@ -1888,12 +1795,8 @@ public class KnowledgeBaseService {
                                              String source,
                                              String extension,
                                              String status,
-                                             FileMetadata fileMetadata) {
-        List<TextSegment> enriched = new ArrayList<>(segments.size());
-        for (TextSegment segment : segments) {
-            enriched.add(TextSegment.from(segment.text(), buildSegmentMetadata(hash, source, extension, status, fileMetadata)));
-        }
-        return enriched;
+                                             KnowledgeFileMetadata fileMetadata) {
+        return knowledgeMetadataService.enrichSegments(segments, hash, source, extension, status, fileMetadata);
     }
 
     private void removeEmbeddingsByHash(String hash) {
@@ -2093,16 +1996,5 @@ public class KnowledgeBaseService {
                                            String extractedText,
                                            List<KnowledgeChunkInfo> chunks,
                                            Path storagePath) {
-    }
-
-    private record FileMetadata(String docType,
-                                String department,
-                                String audience,
-                                String version,
-                                LocalDateTime effectiveAt,
-                                String title,
-                                String doctorName,
-                                Integer sourcePriority,
-                                String keywords) {
     }
 }

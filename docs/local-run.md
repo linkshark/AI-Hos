@@ -178,6 +178,18 @@ mvn spring-boot:run
 - 实例名：`aihos-local`
 - OAP gRPC 端点：`shenchaoqi.x3322.net:11800`
 
+日志默认输出为人类可读格式。如果你想先不引入 ELK、但又希望日志便于后续搜索，可以直接切到结构化 JSON：
+
+```bash
+SPRING_PROFILES_ACTIVE=json-logs mvn spring-boot:run
+```
+
+如果还希望同时落盘：
+
+```bash
+SPRING_PROFILES_ACTIVE=json-logs,file-logs LOG_FILE_NAME=logs/aihos.log mvn spring-boot:run
+```
+
 启动成功后可以访问：
 
 - Knife4j: [http://localhost:8080/doc.html](http://localhost:8080/doc.html)
@@ -311,7 +323,7 @@ mysql -h 127.0.0.1 -P 3306 -u root -p -D aimed -e 'select * from appointment;'
 - 运行中可通过 `POST /aimed/knowledge/upload` 动态上传知识文件，支持 `pdf/doc/docx/md/txt/csv/rtf/html/xml/odt/ods/odp/xls/xlsx/ppt/pptx`
 - 运行中上传的知识文件会保存到 `data/knowledge-base`，重启后会自动重新加载
 - 上传接口在文件保存完成后会立即返回 `QUEUED`，后续解析、RAG 切分、向量化由后台线程池异步完成
-- 知识库管理页会通过带 access token 的 WebSocket `ws://<host>/ws/knowledge?access_token=...` 接收 `READY` / `FAILED` 通知，并自动刷新详情与切分结果
+- 知识库管理页当前使用低频轮询刷新处理状态，不再依赖单独的 WebSocket 通知链
 - 知识库文件状态会同步写入 MySQL 表 `knowledge_file_status`，即使应用重启也能保留当前处理状态和基础元数据
 - 向量数据仅驻留内存，重启后会重新加载
 - Redis 负责邮箱验证码、refresh token、access token 黑名单

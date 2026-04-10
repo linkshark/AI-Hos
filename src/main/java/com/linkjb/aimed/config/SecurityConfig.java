@@ -65,10 +65,11 @@ public class SecurityConfig {
                                 "/aimed/auth/refresh"
                         ).permitAll()
                         .requestMatchers("/aimed/auth/me", "/aimed/auth/logout").authenticated()
+                        .requestMatchers(HttpMethod.POST, "/aimed/chat/sessions").authenticated()
                         .requestMatchers(HttpMethod.GET, "/aimed/chat/provider-config").authenticated()
-                        // WebSocket 握手先放行到专用 HandshakeInterceptor，再由拦截器读取 query token
-                        // 并校验管理员身份；否则 Spring Security 会在升级握手前直接返回 401/403。
-                        .requestMatchers("/ws/knowledge").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/aimed/chat/histories", "/aimed/chat/histories/*").authenticated()
+                        .requestMatchers(HttpMethod.PUT, "/aimed/chat/histories/*/rename", "/aimed/chat/histories/*/pin").authenticated()
+                        .requestMatchers(HttpMethod.DELETE, "/aimed/chat/histories/*").authenticated()
                         .requestMatchers("/aimed/knowledge/**").hasRole("ADMIN")
                         .requestMatchers("/aimed/admin/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.POST, "/aimed/chat").authenticated()

@@ -2,8 +2,10 @@ package com.linkjb.aimed.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.linkjb.aimed.bean.ChatStreamMetadata;
+import com.linkjb.aimed.bean.chat.ChatStreamMetadata;
+import com.linkjb.aimed.bean.chat.ChatTraceStage;
 import com.linkjb.aimed.assistant.LocalStreamingAiMedAgent;
+import com.linkjb.aimed.assistant.OnlineFastAiMedAgent;
 import com.linkjb.aimed.assistant.OnlineAiMedAgent;
 import com.linkjb.aimed.bean.ChatProviderConfigResponse;
 import com.linkjb.aimed.config.RequestTraceFilter;
@@ -50,10 +52,13 @@ public class ChatApplicationService {
     private static final Logger log = LoggerFactory.getLogger(ChatApplicationService.class);
     public static final String LOCAL_OLLAMA = "LOCAL_OLLAMA";
     public static final String QWEN_ONLINE = "QWEN_ONLINE";
+    public static final String QWEN_ONLINE_FAST = "QWEN_ONLINE_FAST";
+    public static final String QWEN_ONLINE_DEEP = "QWEN_ONLINE_DEEP";
     public static final String STREAM_METADATA_MARKER = "\n\n[[AIMED_STREAM_METADATA]]";
 
     private final LocalStreamingAiMedAgent localStreamingAiMedAgent;
     private final OnlineAiMedAgent onlineAiMedAgent;
+    private final OnlineFastAiMedAgent onlineFastAiMedAgent;
     private final KnowledgeBaseService knowledgeBaseService;
     private final HybridKnowledgeRetrieverService hybridKnowledgeRetrieverService;
     private final VisionChatService visionChatService;
@@ -62,10 +67,11 @@ public class ChatApplicationService {
     private final String defaultProvider;
     private final boolean localProviderEnabled;
     private final boolean onlineProviderEnabled;
-    private final Map<String, HybridKnowledgeRetrieverService.RetrievalSummary> completedRetrievalSummaries = new ConcurrentHashMap<>();
+    private final Map<String, ChatStreamMetadata> completedStreamMetadata = new ConcurrentHashMap<>();
 
     public ChatApplicationService(LocalStreamingAiMedAgent localStreamingAiMedAgent,
                                   OnlineAiMedAgent onlineAiMedAgent,
+                                  OnlineFastAiMedAgent onlineFastAiMedAgent,
                                   KnowledgeBaseService knowledgeBaseService,
                                   HybridKnowledgeRetrieverService hybridKnowledgeRetrieverService,
                                   VisionChatService visionChatService,
@@ -76,6 +82,7 @@ public class ChatApplicationService {
                                   @Value("${app.provider.online-enabled:true}") boolean onlineProviderEnabled) {
         this.localStreamingAiMedAgent = localStreamingAiMedAgent;
         this.onlineAiMedAgent = onlineAiMedAgent;
+        this.onlineFastAiMedAgent = onlineFastAiMedAgent;
         this.knowledgeBaseService = knowledgeBaseService;
         this.hybridKnowledgeRetrieverService = hybridKnowledgeRetrieverService;
         this.visionChatService = visionChatService;
@@ -88,8 +95,9 @@ public class ChatApplicationService {
 
     public Flux<String> chat(Long memoryId, String message, String modelProvider) {
         String provider = normalizeProvider(modelProvider);
+        ChatRuntimeTrace runtimeTrace = new ChatRuntimeTrace(traceIdProvider.currentTraceId(), provider, System.nanoTime(), 0L, false);
         log.info("chat.request provider={} memoryId={} chars={} attachments=0", provider, memoryId, textLength(message));
-        return startChat(provider, memoryId, message, message)
+        return startChat(provider, memoryId, message, message, runtimeTrace)
                 .onErrorResume(error -> {
                     log.error("chat.request.failed provider={} memoryId={} chars={}", provider, memoryId, textLength(message), error);
                     return Flux.just(errorMessageForProvider(provider));
@@ -98,13 +106,21 @@ public class ChatApplicationService {
 
     public Flux<String> chatWithFiles(Long memoryId, String message, String modelProvider, MultipartFile[] files) {
         String provider = normalizeProvider(modelProvider);
+        long requestStartedAt = System.nanoTime();
         log.info("chat.request provider={} memoryId={} chars={} attachments={}", provider, memoryId, textLength(message), fileCount(files));
         try {
             if (knowledgeBaseService.hasImageAttachments(files)) {
                 return Flux.just(visionChatService.analyze(memoryId, message, files, provider));
             }
             String augmentedMessage = knowledgeBaseService.buildChatMessageWithAttachments(message, files);
-            return startChat(provider, memoryId, augmentedMessage, message)
+            ChatRuntimeTrace runtimeTrace = new ChatRuntimeTrace(
+                    traceIdProvider.currentTraceId(),
+                    provider,
+                    requestStartedAt,
+                    durationMs(requestStartedAt),
+                    fileCount(files) > 0
+            );
+            return startChat(provider, memoryId, augmentedMessage, message, runtimeTrace)
                     .onErrorResume(error -> {
                         log.error("chat.request.failed provider={} memoryId={} attachments={}", provider, memoryId, fileCount(files), error);
                         return Flux.just(errorMessageForProvider(provider));
@@ -116,28 +132,39 @@ public class ChatApplicationService {
     }
 
     public ChatProviderConfigResponse providerConfig() {
-        List<String> enabledProviders = new ArrayList<>(2);
+        List<String> enabledProviders = new ArrayList<>(3);
         if (localProviderEnabled) {
             enabledProviders.add(LOCAL_OLLAMA);
         }
         if (onlineProviderEnabled) {
-            enabledProviders.add(QWEN_ONLINE);
+            enabledProviders.add(QWEN_ONLINE_FAST);
+            enabledProviders.add(QWEN_ONLINE_DEEP);
         }
         return new ChatProviderConfigResponse(normalizeProvider(defaultProvider), enabledProviders);
     }
 
-    private Flux<String> startChat(String provider, Long memoryId, String message, String summaryFallbackQuery) {
-        if (QWEN_ONLINE.equals(provider)) {
-            String requestTraceId = traceIdProvider.currentTraceId();
-            Flux<String> source = onlineAiMedAgent.chat(memoryId, message);
+    private Flux<String> startChat(String provider,
+                                   Long memoryId,
+                                   String message,
+                                   String summaryFallbackQuery,
+                                   ChatRuntimeTrace runtimeTrace) {
+        if (isOnlineProvider(provider)) {
+            boolean isFastProvider = QWEN_ONLINE_FAST.equals(provider);
+            runtimeTrace.setToolMode(isFastProvider ? "FAST" : "DEEP");
+            Flux<String> source = isFastProvider
+                    ? onlineFastAiMedAgent.chat(memoryId, message)
+                    : onlineAiMedAgent.chat(memoryId, message);
+            log.info("chat.online.path memoryId={} toolMode={} chars={}",
+                    memoryId, isFastProvider ? "fast" : "deep", textLength(message));
             // 在线模型本身已经是 Flux，因此正文先自然流出，等流结束后再把检索摘要拼成一个 metadata 尾包。
             // 这样前端既能第一时间看到回答，也不会因为等引用而卡住首屏输出。
-            return withFluxLogs(provider, memoryId, message, source)
+            return withFluxLogs(provider, memoryId, message, source, runtimeTrace)
                     .concatWith(Flux.defer(() -> {
                         HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary = resolveRetrievalSummary(provider, summaryFallbackQuery);
-                        rememberRetrievalSummary(requestTraceId, retrievalSummary);
+                        ChatStreamMetadata metadata = buildStreamMetadata(runtimeTrace, retrievalSummary);
+                        rememberStreamMetadata(runtimeTrace.traceId(), metadata);
                         logRetrievalSummary(provider, memoryId, retrievalSummary);
-                        String metadataChunk = encodeStreamMetadata(retrievalSummary);
+                        String metadataChunk = encodeStreamMetadata(metadata);
                         return StringUtils.hasText(metadataChunk) ? Flux.just(metadataChunk) : Flux.empty();
                     }));
         }
@@ -149,12 +176,18 @@ public class ChatApplicationService {
             AtomicInteger chunkCount = new AtomicInteger();
             AtomicLong charCount = new AtomicLong();
             StringBuilder streamedText = new StringBuilder();
-            String requestTraceId = traceIdProvider.currentTraceId();
+            runtimeTrace.setToolMode("STANDARD");
+            String requestTraceId = runtimeTrace.traceId();
             log.info("model.stream.start provider={} memoryId={} chars={}", provider, memoryId, textLength(message));
             tokenStream
                     .onPartialResponse(tracedConsumer(requestTraceId, "chat.local.stream.partial", partial -> {
                         chunkCount.incrementAndGet();
                         charCount.addAndGet(partial == null ? 0 : partial.length());
+                        if (runtimeTrace.firstTokenLatencyMs() < 0) {
+                            runtimeTrace.setFirstTokenLatencyMs(durationMs(runtimeTrace.requestStartedAt()));
+                            log.info("model.stream.first_chunk provider={} memoryId={} latencyMs={}",
+                                    provider, memoryId, runtimeTrace.firstTokenLatencyMs());
+                        }
                         if (partial != null) {
                             streamedText.append(partial);
                         }
@@ -162,7 +195,8 @@ public class ChatApplicationService {
                     }))
                     .onCompleteResponse(tracedConsumer(requestTraceId, "chat.local.stream.complete", response -> {
                         HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary = resolveRetrievalSummary(provider, summaryFallbackQuery);
-                        rememberRetrievalSummary(requestTraceId, retrievalSummary);
+                        ChatStreamMetadata metadata = buildStreamMetadata(runtimeTrace, retrievalSummary);
+                        rememberStreamMetadata(requestTraceId, metadata);
                         logRetrievalSummary(provider, memoryId, retrievalSummary);
                         String finalText = finalResponseText(response);
                         // 如果本地模型最后没给出稳定正文，就退化成基于 citation 的简短总结，至少保证用户看到的是一句能读懂的话，
@@ -176,7 +210,7 @@ public class ChatApplicationService {
                         log.info("model.stream.complete provider={} memoryId={} chunks={} chars={} durationMs={} finishReason={} outputTokens={}",
                                 provider, memoryId, chunkCount.get(), charCount.get(), durationMs(startedAt),
                                 finishReason(response), outputTokenCount(response));
-                        String metadataChunk = encodeStreamMetadata(retrievalSummary);
+                        String metadataChunk = encodeStreamMetadata(metadata);
                         if (StringUtils.hasText(metadataChunk)) {
                             emitter.next(metadataChunk);
                         }
@@ -191,16 +225,22 @@ public class ChatApplicationService {
         }, FluxSink.OverflowStrategy.BUFFER);
     }
 
-    private Flux<String> withFluxLogs(String provider, Long memoryId, String message, Flux<String> source) {
+    private Flux<String> withFluxLogs(String provider, Long memoryId, String message, Flux<String> source, ChatRuntimeTrace runtimeTrace) {
         long startedAt = System.nanoTime();
         AtomicInteger chunkCount = new AtomicInteger();
         AtomicLong charCount = new AtomicLong();
+        AtomicLong firstChunkLatencyMs = new AtomicLong(-1);
         log.info("model.stream.start provider={} memoryId={} chars={}", provider, memoryId, textLength(message));
         // 在线和本地最后都要汇总成同一套监控口径，所以这里把 chunk 数、字符数、耗时统一记下来。
         return source
                 .doOnNext(chunk -> {
                     chunkCount.incrementAndGet();
                     charCount.addAndGet(chunk == null ? 0 : chunk.length());
+                    if (firstChunkLatencyMs.compareAndSet(-1, durationMs(startedAt))) {
+                        runtimeTrace.setFirstTokenLatencyMs(durationMs(runtimeTrace.requestStartedAt()));
+                        log.info("model.stream.first_chunk provider={} memoryId={} latencyMs={}",
+                                provider, memoryId, runtimeTrace.firstTokenLatencyMs());
+                    }
                 })
                 .doOnComplete(() -> log.info("model.stream.complete provider={} memoryId={} chunks={} chars={} durationMs={}",
                         provider, memoryId, chunkCount.get(), charCount.get(), durationMs(startedAt)))
@@ -211,8 +251,11 @@ public class ChatApplicationService {
     public String normalizeProvider(String provider) {
         String requested = provider == null ? defaultProvider : provider;
         String normalized = requested.trim().toUpperCase(Locale.ROOT);
-        if (QWEN_ONLINE.equals(normalized)) {
-            return onlineProviderEnabled ? QWEN_ONLINE : fallbackProvider();
+        if (QWEN_ONLINE.equals(normalized) || QWEN_ONLINE_FAST.equals(normalized)) {
+            return onlineProviderEnabled ? QWEN_ONLINE_FAST : fallbackProvider();
+        }
+        if (QWEN_ONLINE_DEEP.equals(normalized)) {
+            return onlineProviderEnabled ? QWEN_ONLINE_DEEP : fallbackProvider();
         }
         return localProviderEnabled ? LOCAL_OLLAMA : fallbackProvider();
     }
@@ -222,13 +265,13 @@ public class ChatApplicationService {
             return LOCAL_OLLAMA;
         }
         if (onlineProviderEnabled) {
-            return QWEN_ONLINE;
+            return QWEN_ONLINE_FAST;
         }
         throw new IllegalStateException("未启用任何可用的大模型提供方，请检查 app.provider.* 配置");
     }
 
     private String errorMessageForProvider(String provider) {
-        if (QWEN_ONLINE.equals(provider)) {
+        if (isOnlineProvider(provider)) {
             return "抱歉，当前千问在线服务暂时不可用，请稍后重试。若持续失败，请检查百炼网络连接。";
         }
         return "抱歉，当前本地 Ollama 模型暂时不可用，请检查本机 Ollama 服务和模型是否已启动。";
@@ -251,8 +294,7 @@ public class ChatApplicationService {
                 summary.finalHits().stream().map(HybridKnowledgeRetrieverService.RetrievedChunk::fileHash).distinct().limit(5).toList());
     }
 
-    private String encodeStreamMetadata(HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary) {
-        ChatStreamMetadata metadata = hybridKnowledgeRetrieverService.toChatStreamMetadata(retrievalSummary);
+    private String encodeStreamMetadata(ChatStreamMetadata metadata) {
         try {
             // metadata 作为尾包塞回同一条流里，前端只要认这个 marker，就能把“回答正文”和“引用摘要”拆开显示。
             return STREAM_METADATA_MARKER + objectMapper.writeValueAsString(metadata);
@@ -274,24 +316,28 @@ public class ChatApplicationService {
         // 正常情况下，Agent 内部的 ContentRetriever 会把摘要放进 ThreadLocal。
         // 只有在异常边界或本地模型特殊结束路径下，才需要这里兜底再查一次。
         HybridKnowledgeRetrieverService.RetrievalProfile profile =
-                QWEN_ONLINE.equals(provider)
+                isOnlineProvider(provider)
                         ? HybridKnowledgeRetrieverService.RetrievalProfile.ONLINE
                         : HybridKnowledgeRetrieverService.RetrievalProfile.LOCAL;
         return hybridKnowledgeRetrieverService.search(fallbackQuery, profile);
     }
 
-    public HybridKnowledgeRetrieverService.RetrievalSummary consumeCompletedRetrievalSummary(String traceId) {
+    private boolean isOnlineProvider(String provider) {
+        return QWEN_ONLINE_FAST.equals(provider) || QWEN_ONLINE_DEEP.equals(provider) || QWEN_ONLINE.equals(provider);
+    }
+
+    public ChatStreamMetadata consumeCompletedStreamMetadata(String traceId) {
         if (!StringUtils.hasText(traceId)) {
             return null;
         }
-        return completedRetrievalSummaries.remove(traceId);
+        return completedStreamMetadata.remove(traceId);
     }
 
-    private void rememberRetrievalSummary(String traceId, HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary) {
-        if (!StringUtils.hasText(traceId) || retrievalSummary == null) {
+    private void rememberStreamMetadata(String traceId, ChatStreamMetadata metadata) {
+        if (!StringUtils.hasText(traceId) || metadata == null) {
             return;
         }
-        completedRetrievalSummaries.put(traceId, retrievalSummary);
+        completedStreamMetadata.put(traceId, metadata);
     }
 
     private int fileCount(MultipartFile[] files) {
@@ -300,6 +346,75 @@ public class ChatApplicationService {
 
     private long durationMs(long startedAt) {
         return (System.nanoTime() - startedAt) / 1_000_000;
+    }
+
+    private ChatStreamMetadata buildStreamMetadata(ChatRuntimeTrace runtimeTrace,
+                                                   HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary) {
+        ChatStreamMetadata metadata = hybridKnowledgeRetrieverService.toChatStreamMetadata(retrievalSummary);
+        metadata.setTraceId(runtimeTrace.traceId());
+        metadata.setProvider(runtimeTrace.provider());
+        metadata.setToolMode(runtimeTrace.toolMode());
+        metadata.setServerDurationMs(durationMs(runtimeTrace.requestStartedAt()));
+        metadata.setFirstTokenLatencyMs(Math.max(0, runtimeTrace.firstTokenLatencyMs()));
+        metadata.setTraceStages(buildTraceStages(runtimeTrace, retrievalSummary, metadata));
+        return metadata;
+    }
+
+    private List<ChatTraceStage> buildTraceStages(ChatRuntimeTrace runtimeTrace,
+                                                  HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary,
+                                                  ChatStreamMetadata metadata) {
+        List<ChatTraceStage> stages = new ArrayList<>();
+        if (runtimeTrace.attachmentPreparationMs() > 0) {
+            stages.add(new ChatTraceStage(
+                    "attachments",
+                    "附件解析",
+                    runtimeTrace.attachmentPreparationMs(),
+                    "DONE",
+                    runtimeTrace.hasAttachments() ? "已完成附件预处理" : "无附件"
+            ));
+        }
+        if (retrievalSummary != null) {
+            HybridKnowledgeRetrieverService.RetrievalTimings timings = retrievalSummary.timings();
+            stages.add(new ChatTraceStage(
+                    "retrieve",
+                    "知识检索",
+                    retrievalSummary.durationMs(),
+                    "DONE",
+                    "关键词 " + retrievalSummary.retrievedCountKeyword()
+                            + " / 向量 " + retrievalSummary.retrievedCountVector()
+                            + " / 最终 " + retrievalSummary.finalHits().size()
+            ));
+            if (timings != null) {
+                stages.add(new ChatTraceStage("retrieve_keyword", "关键词召回", timings.keywordDurationMs(), "DONE",
+                        "queryType=" + retrievalSummary.queryType()));
+                stages.add(new ChatTraceStage(
+                        "retrieve_vector",
+                        "向量召回",
+                        timings.vectorDurationMs(),
+                        timings.vectorSkipped() ? "SKIPPED" : "DONE",
+                        timings.vectorSkipped() ? "本次命中强关键词，已跳过向量阶段" : "执行向量检索"
+                ));
+                stages.add(new ChatTraceStage("retrieve_merge", "结果合并", timings.mergeDurationMs(), "DONE",
+                        "merged=" + retrievalSummary.mergedCount()));
+            }
+        }
+        long firstTokenLatencyMs = Math.max(0, metadata.getFirstTokenLatencyMs());
+        long retrievalDurationMs = retrievalSummary == null ? 0 : retrievalSummary.durationMs();
+        long modelWaitMs = Math.max(0, firstTokenLatencyMs - retrievalDurationMs);
+        if (firstTokenLatencyMs > 0) {
+            stages.add(new ChatTraceStage("model_wait", "模型首字等待", modelWaitMs, "DONE",
+                    "从请求发出到首个响应块返回"));
+        }
+        long streamOutputMs = firstTokenLatencyMs > 0
+                ? Math.max(0, metadata.getServerDurationMs() - runtimeTrace.attachmentPreparationMs() - firstTokenLatencyMs)
+                : 0;
+        if (streamOutputMs > 0) {
+            stages.add(new ChatTraceStage("stream_output", "流式输出", streamOutputMs, "DONE",
+                    "首字后持续输出正文"));
+        }
+        stages.add(new ChatTraceStage("server_total", "服务总耗时", metadata.getServerDurationMs(), "DONE",
+                "provider=" + runtimeTrace.provider() + " / toolMode=" + runtimeTrace.toolMode()));
+        return stages;
     }
 
     private String finishReason(ChatResponse response) {
@@ -381,5 +496,63 @@ public class ChatApplicationService {
                 }
             }
         });
+    }
+
+    private static final class ChatRuntimeTrace {
+        private final String traceId;
+        private final String provider;
+        private final long requestStartedAt;
+        private final long attachmentPreparationMs;
+        private final boolean hasAttachments;
+        private volatile long firstTokenLatencyMs = -1;
+        private volatile String toolMode = "STANDARD";
+
+        private ChatRuntimeTrace(String traceId,
+                                 String provider,
+                                 long requestStartedAt,
+                                 long attachmentPreparationMs,
+                                 boolean hasAttachments) {
+            this.traceId = traceId;
+            this.provider = provider;
+            this.requestStartedAt = requestStartedAt;
+            this.attachmentPreparationMs = attachmentPreparationMs;
+            this.hasAttachments = hasAttachments;
+        }
+
+        private String traceId() {
+            return traceId;
+        }
+
+        private String provider() {
+            return provider;
+        }
+
+        private long requestStartedAt() {
+            return requestStartedAt;
+        }
+
+        private long attachmentPreparationMs() {
+            return attachmentPreparationMs;
+        }
+
+        private boolean hasAttachments() {
+            return hasAttachments;
+        }
+
+        private long firstTokenLatencyMs() {
+            return firstTokenLatencyMs;
+        }
+
+        private void setFirstTokenLatencyMs(long firstTokenLatencyMs) {
+            this.firstTokenLatencyMs = firstTokenLatencyMs;
+        }
+
+        private String toolMode() {
+            return toolMode;
+        }
+
+        private void setToolMode(String toolMode) {
+            this.toolMode = toolMode;
+        }
     }
 }

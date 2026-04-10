@@ -1,4 +1,6 @@
-package com.linkjb.aimed.bean;
+package com.linkjb.aimed.bean.chat;
+
+import com.linkjb.aimed.bean.KnowledgeCitationItem;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -13,6 +15,12 @@ public class ChatStreamMetadata {
     private boolean emptyRecall;
     private long durationMs;
     private List<String> topDocHashes = new ArrayList<>();
+    private String traceId;
+    private String provider;
+    private String toolMode;
+    private long serverDurationMs;
+    private long firstTokenLatencyMs;
+    private List<ChatTraceStage> traceStages = new ArrayList<>();
 
     public List<KnowledgeCitationItem> getCitations() {
         return citations;
@@ -84,5 +92,53 @@ public class ChatStreamMetadata {
 
     public void setTopDocHashes(List<String> topDocHashes) {
         this.topDocHashes = topDocHashes;
+    }
+
+    public String getTraceId() {
+        return traceId;
+    }
+
+    public void setTraceId(String traceId) {
+        this.traceId = traceId;
+    }
+
+    public String getProvider() {
+        return provider;
+    }
+
+    public void setProvider(String provider) {
+        this.provider = provider;
+    }
+
+    public String getToolMode() {
+        return toolMode;
+    }
+
+    public void setToolMode(String toolMode) {
+        this.toolMode = toolMode;
+    }
+
+    public long getServerDurationMs() {
+        return serverDurationMs;
+    }
+
+    public void setServerDurationMs(long serverDurationMs) {
+        this.serverDurationMs = serverDurationMs;
+    }
+
+    public long getFirstTokenLatencyMs() {
+        return firstTokenLatencyMs;
+    }
+
+    public void setFirstTokenLatencyMs(long firstTokenLatencyMs) {
+        this.firstTokenLatencyMs = firstTokenLatencyMs;
+    }
+
+    public List<ChatTraceStage> getTraceStages() {
+        return traceStages;
+    }
+
+    public void setTraceStages(List<ChatTraceStage> traceStages) {
+        this.traceStages = traceStages;
     }
 }

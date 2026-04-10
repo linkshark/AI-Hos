@@ -151,6 +151,7 @@ npm run dev
 - [模块说明](docs/modules.md)
 - [SkyWalking 部署说明](docs/skywalking-deploy.md)
 - [Chroma 部署说明](docs/chroma-deploy.md)
+- [MCP 接入管理](docs/mcp-admin.md)
 
 ---
 

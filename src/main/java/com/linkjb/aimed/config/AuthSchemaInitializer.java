@@ -58,12 +58,24 @@ public class AuthSchemaInitializer {
                 CREATE TABLE IF NOT EXISTS chat_session_owner (
                   memory_id BIGINT NOT NULL COMMENT '会话 memoryId',
                   user_id BIGINT NOT NULL COMMENT '会话所属用户 ID',
+                  custom_title VARCHAR(128) DEFAULT NULL COMMENT '用户自定义会话标题',
+                  pinned TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否置顶',
+                  pinned_at DATETIME DEFAULT NULL COMMENT '置顶时间',
+                  hidden TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否隐藏',
+                  hidden_at DATETIME DEFAULT NULL COMMENT '隐藏时间',
                   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
                   PRIMARY KEY (memory_id),
                   KEY idx_chat_session_owner_user (user_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """);
+        addChatSessionOwnerColumnIfMissing("custom_title", "ALTER TABLE chat_session_owner ADD COLUMN custom_title VARCHAR(128) DEFAULT NULL");
+        addChatSessionOwnerColumnIfMissing("pinned", "ALTER TABLE chat_session_owner ADD COLUMN pinned TINYINT(1) NOT NULL DEFAULT 0");
+        addChatSessionOwnerColumnIfMissing("pinned_at", "ALTER TABLE chat_session_owner ADD COLUMN pinned_at DATETIME DEFAULT NULL");
+        addChatSessionOwnerColumnIfMissing("hidden", "ALTER TABLE chat_session_owner ADD COLUMN hidden TINYINT(1) NOT NULL DEFAULT 0");
+        addChatSessionOwnerColumnIfMissing("hidden_at", "ALTER TABLE chat_session_owner ADD COLUMN hidden_at DATETIME DEFAULT NULL");
+        jdbcTemplate.update("UPDATE chat_session_owner SET pinned = 0 WHERE pinned IS NULL");
+        jdbcTemplate.update("UPDATE chat_session_owner SET hidden = 0 WHERE hidden IS NULL");
 
         jdbcTemplate.execute("""
                 CREATE TABLE IF NOT EXISTS audit_log (
@@ -85,7 +97,10 @@ public class AuthSchemaInitializer {
                   empty_recall TINYINT(1) DEFAULT NULL COMMENT '是否空召回',
                   top_doc_hashes VARCHAR(512) DEFAULT NULL COMMENT '命中文档 hash 摘要',
                   duration_ms BIGINT DEFAULT NULL COMMENT '耗时毫秒',
+                  first_token_latency_ms BIGINT DEFAULT NULL COMMENT '首个响应块延迟毫秒',
                   has_attachments TINYINT(1) DEFAULT NULL COMMENT '是否包含附件',
+                  tool_mode VARCHAR(32) DEFAULT NULL COMMENT '聊天链路模式',
+                  trace_timeline_json LONGTEXT DEFAULT NULL COMMENT '聊天阶段耗时 JSON',
                   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                   PRIMARY KEY (id),
                   KEY idx_audit_log_action_type (action_type),
@@ -100,6 +115,9 @@ public class AuthSchemaInitializer {
         addAuditLogColumnIfMissing("final_citation_count", "ALTER TABLE audit_log ADD COLUMN final_citation_count INT DEFAULT NULL");
         addAuditLogColumnIfMissing("empty_recall", "ALTER TABLE audit_log ADD COLUMN empty_recall TINYINT(1) DEFAULT NULL");
         addAuditLogColumnIfMissing("top_doc_hashes", "ALTER TABLE audit_log ADD COLUMN top_doc_hashes VARCHAR(512) DEFAULT NULL");
+        addAuditLogColumnIfMissing("first_token_latency_ms", "ALTER TABLE audit_log ADD COLUMN first_token_latency_ms BIGINT DEFAULT NULL");
+        addAuditLogColumnIfMissing("tool_mode", "ALTER TABLE audit_log ADD COLUMN tool_mode VARCHAR(32) DEFAULT NULL");
+        addAuditLogColumnIfMissing("trace_timeline_json", "ALTER TABLE audit_log ADD COLUMN trace_timeline_json LONGTEXT DEFAULT NULL");
         ensureColumnComments();
 
         bootstrapAdmin();
@@ -119,6 +137,11 @@ public class AuthSchemaInitializer {
 
         updateChatSessionOwnerColumnComment("memory_id BIGINT NOT NULL COMMENT '会话 memoryId'");
         updateChatSessionOwnerColumnComment("user_id BIGINT NOT NULL COMMENT '会话所属用户 ID'");
+        updateChatSessionOwnerColumnComment("custom_title VARCHAR(128) DEFAULT NULL COMMENT '用户自定义会话标题'");
+        updateChatSessionOwnerColumnComment("pinned TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否置顶'");
+        updateChatSessionOwnerColumnComment("pinned_at DATETIME DEFAULT NULL COMMENT '置顶时间'");
+        updateChatSessionOwnerColumnComment("hidden TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否隐藏'");
+        updateChatSessionOwnerColumnComment("hidden_at DATETIME DEFAULT NULL COMMENT '隐藏时间'");
         updateChatSessionOwnerColumnComment("created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'");
         updateChatSessionOwnerColumnComment("updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'");
 
@@ -140,7 +163,10 @@ public class AuthSchemaInitializer {
         updateAuditLogColumnComment("empty_recall TINYINT(1) DEFAULT NULL COMMENT '是否空召回'");
         updateAuditLogColumnComment("top_doc_hashes VARCHAR(512) DEFAULT NULL COMMENT '命中文档 hash 摘要'");
         updateAuditLogColumnComment("duration_ms BIGINT DEFAULT NULL COMMENT '耗时毫秒'");
+        updateAuditLogColumnComment("first_token_latency_ms BIGINT DEFAULT NULL COMMENT '首个响应块延迟毫秒'");
         updateAuditLogColumnComment("has_attachments TINYINT(1) DEFAULT NULL COMMENT '是否包含附件'");
+        updateAuditLogColumnComment("tool_mode VARCHAR(32) DEFAULT NULL COMMENT '聊天链路模式'");
+        updateAuditLogColumnComment("trace_timeline_json LONGTEXT DEFAULT NULL COMMENT '聊天阶段耗时 JSON'");
         updateAuditLogColumnComment("created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'");
     }
 
@@ -209,6 +235,23 @@ public class AuthSchemaInitializer {
                         FROM information_schema.columns
                         WHERE table_schema = DATABASE()
                           AND table_name = 'audit_log'
+                          AND column_name = ?
+                        """,
+                Integer.class,
+                columnName
+        );
+        if (count == null || count == 0) {
+            jdbcTemplate.execute(ddl);
+        }
+    }
+
+    private void addChatSessionOwnerColumnIfMissing(String columnName, String ddl) {
+        Integer count = jdbcTemplate.queryForObject(
+                """
+                        SELECT COUNT(*)
+                        FROM information_schema.columns
+                        WHERE table_schema = DATABASE()
+                          AND table_name = 'chat_session_owner'
                           AND column_name = ?
                         """,
                 Integer.class,

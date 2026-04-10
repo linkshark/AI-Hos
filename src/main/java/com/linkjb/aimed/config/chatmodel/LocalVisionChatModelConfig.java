@@ -1,4 +1,4 @@
-package com.linkjb.aimed.config;
+package com.linkjb.aimed.config.chatmodel;
 
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.ollama.OllamaChatModel;

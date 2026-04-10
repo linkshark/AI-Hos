@@ -28,7 +28,10 @@ public class AuditLog {
     private Boolean emptyRecall;
     private String topDocHashes;
     private Long durationMs;
+    private Long firstTokenLatencyMs;
     private Boolean hasAttachments;
+    private String toolMode;
+    private String traceTimelineJson;
     private LocalDateTime createdAt;
 
     public Long getId() {
@@ -175,12 +178,36 @@ public class AuditLog {
         this.durationMs = durationMs;
     }
 
+    public Long getFirstTokenLatencyMs() {
+        return firstTokenLatencyMs;
+    }
+
+    public void setFirstTokenLatencyMs(Long firstTokenLatencyMs) {
+        this.firstTokenLatencyMs = firstTokenLatencyMs;
+    }
+
     public Boolean getHasAttachments() {
         return hasAttachments;
     }
 
     public void setHasAttachments(Boolean hasAttachments) {
         this.hasAttachments = hasAttachments;
+    }
+
+    public String getToolMode() {
+        return toolMode;
+    }
+
+    public void setToolMode(String toolMode) {
+        this.toolMode = toolMode;
+    }
+
+    public String getTraceTimelineJson() {
+        return traceTimelineJson;
+    }
+
+    public void setTraceTimelineJson(String traceTimelineJson) {
+        this.traceTimelineJson = traceTimelineJson;
     }
 
     public LocalDateTime getCreatedAt() {

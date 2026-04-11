@@ -41,8 +41,7 @@ class HybridKnowledgeRetrieverServiceTest {
                 jdbcTemplate,
                 embeddingStore,
                 embeddingModel,
-                8, 8, 6, 0.35,
-                4, 4, 3, 0.55
+                8, 8, 6, 0.35, 3
         );
 
         KnowledgeRetrievalDiagnosticResponse response = service.diagnose("李兰娟院士挂号 2024 指南", "ONLINE");
@@ -53,13 +52,15 @@ class HybridKnowledgeRetrieverServiceTest {
         assertTrue(response.keywordTokens().contains("2024年"));
         assertTrue(response.booleanQuery().contains("2024"));
         assertEquals(1, response.keywordHits().size());
-        assertEquals(0, response.vectorHits().size());
+        assertEquals(1, response.vectorHits().size());
         assertEquals(1, response.finalHits().size());
-        assertEquals("keyword", response.finalHits().get(0).retrievalType());
+        assertEquals("hybrid", response.finalHits().get(0).retrievalType());
+        assertFalse(response.scoringRules().isEmpty());
+        assertFalse(response.finalHits().get(0).scoreBreakdown().isEmpty());
     }
 
     @Test
-    void shouldSkipVectorForStrongOnlineKeywordQuery() {
+    void shouldAlwaysUseVectorForStrongOnlineKeywordQuery() {
         JdbcTemplate jdbcTemplate = new StubJdbcTemplate();
         EmbeddingStore<TextSegment> embeddingStore = new StubEmbeddingStore();
         AtomicInteger embedInvocations = new AtomicInteger();
@@ -72,17 +73,18 @@ class HybridKnowledgeRetrieverServiceTest {
                 jdbcTemplate,
                 embeddingStore,
                 embeddingModel,
-                8, 8, 6, 0.35,
-                4, 4, 3, 0.55
+                8, 8, 6, 0.35, 3
         );
 
         HybridKnowledgeRetrieverService.RetrievalSummary summary =
                 service.search("李兰娟院士挂号 2024 指南", HybridKnowledgeRetrieverService.RetrievalProfile.ONLINE);
 
-        assertEquals(0, embedInvocations.get());
-        assertEquals(0, summary.retrievedCountVector());
+        assertEquals(1, embedInvocations.get());
+        assertEquals(1, summary.retrievedCountVector());
         assertEquals(1, summary.retrievedCountKeyword());
         assertFalse(summary.emptyRecall());
+        assertFalse(summary.timings().vectorSkipped());
+        assertTrue(summary.finalHits().size() <= 6);
     }
 
     @Test
@@ -99,8 +101,7 @@ class HybridKnowledgeRetrieverServiceTest {
                 jdbcTemplate,
                 embeddingStore,
                 embeddingModel,
-                8, 8, 6, 0.35,
-                4, 4, 3, 0.55
+                8, 8, 6, 0.35, 3
         );
 
         HybridKnowledgeRetrieverService.RetrievalSummary summary =
@@ -108,6 +109,33 @@ class HybridKnowledgeRetrieverServiceTest {
 
         assertEquals(1, embedInvocations.get());
         assertEquals(1, summary.retrievedCountVector());
+    }
+
+    @Test
+    void shouldKeepHybridRecallButUseSmallerLocalFinalWindow() {
+        JdbcTemplate jdbcTemplate = new StubJdbcTemplate();
+        EmbeddingStore<TextSegment> embeddingStore = new StubEmbeddingStore();
+        AtomicInteger embedInvocations = new AtomicInteger();
+        EmbeddingModel embeddingModel = segments -> {
+            embedInvocations.incrementAndGet();
+            return Response.from(List.of(Embedding.from(new float[]{0.2f, 0.3f})));
+        };
+
+        HybridKnowledgeRetrieverService service = new HybridKnowledgeRetrieverService(
+                jdbcTemplate,
+                embeddingStore,
+                embeddingModel,
+                8, 8, 6, 0.35, 3
+        );
+
+        HybridKnowledgeRetrieverService.RetrievalSummary summary =
+                service.search("李兰娟院士挂号 2024 指南", HybridKnowledgeRetrieverService.RetrievalProfile.LOCAL);
+
+        assertEquals(1, embedInvocations.get());
+        assertEquals(1, summary.retrievedCountVector());
+        assertEquals(1, summary.retrievedCountKeyword());
+        assertFalse(summary.timings().vectorSkipped());
+        assertTrue(summary.finalHits().size() <= 3);
     }
 
     private static final class StubJdbcTemplate extends JdbcTemplate {

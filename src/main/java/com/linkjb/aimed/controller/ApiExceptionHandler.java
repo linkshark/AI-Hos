@@ -1,7 +1,7 @@
 package com.linkjb.aimed.controller;
 
 import com.linkjb.aimed.bean.ApiErrorResponse;
-import com.linkjb.aimed.config.RequestTraceFilter;
+import com.linkjb.aimed.config.skywalk.RequestTraceFilter;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

@@ -15,7 +15,7 @@ import java.util.List;
 
 @Tag(name = "Mcp")
 @RestController
-@RequestMapping("/aimed")
+@RequestMapping({"/aimed/admin", "/api/aimed/admin"})
 public class McpController {
 
     private final McpServerAdminService mcpServerAdminService;

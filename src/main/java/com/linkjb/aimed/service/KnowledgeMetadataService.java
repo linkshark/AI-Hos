@@ -43,9 +43,9 @@ public class KnowledgeMetadataService {
         }
         String title = StringUtils.hasText(originalFilename) ? originalFilename : "未命名知识文件";
         int sourcePriority = "bundled".equals(source) ? 100 : 60;
-        String department = KnowledgeSearchLexicon.inferDepartment(title);
+        String department = DeptInfoService.GENERAL_DEPT_CODE;
         String doctorName = KnowledgeSearchLexicon.inferDoctorName(title);
-        String keywordSeed = KnowledgeSearchLexicon.buildKeywordSeed(title, extension, docType, department, doctorName);
+        String keywordSeed = KnowledgeSearchLexicon.buildKeywordSeed(title, extension, docType, "", doctorName);
         return new KnowledgeFileMetadata(
                 docType,
                 department,
@@ -65,7 +65,7 @@ public class KnowledgeMetadataService {
         }
         return new KnowledgeFileMetadata(
                 pickText(override.docType(), base.docType()),
-                pickText(override.department(), base.department()),
+                pickDepartment(override.department(), base.department()),
                 pickText(override.audience(), base.audience()),
                 pickText(override.version(), base.version()),
                 override.effectiveAt() == null ? base.effectiveAt() : override.effectiveAt(),
@@ -199,7 +199,7 @@ public class KnowledgeMetadataService {
 
     private boolean shouldBackfillDepartment(String value) {
         String normalized = normalize(value);
-        return normalized.isEmpty() || "通用".equals(normalized);
+        return normalized.isEmpty() || DeptInfoService.GENERAL_DEPT_NAME.equals(normalized);
     }
 
     private boolean shouldBackfillDoctorName(String value) {
@@ -218,6 +218,15 @@ public class KnowledgeMetadataService {
 
     private String pickText(String primary, String fallback) {
         return StringUtils.hasText(primary) ? primary.trim() : fallback;
+    }
+
+    private String pickDepartment(String primary, String fallback) {
+        String value = pickText(primary, fallback);
+        String normalized = normalize(value);
+        if (!StringUtils.hasText(normalized) || DeptInfoService.GENERAL_DEPT_NAME.equals(normalized)) {
+            return DeptInfoService.GENERAL_DEPT_CODE;
+        }
+        return normalized;
     }
 
     private String normalize(String value) {

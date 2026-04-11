@@ -30,7 +30,7 @@ class KnowledgeMetadataServiceTest {
         KnowledgeMetadataService.MetadataBackfillPlan plan = service.buildBackfillPlan(status);
 
         assertEquals("李兰娟院士肝胆胰门诊指南.md", plan.metadata().title());
-        assertEquals("肝胆胰", plan.metadata().department());
+        assertEquals(DeptInfoService.GENERAL_DEPT_CODE, plan.metadata().department());
         assertEquals("李兰娟", plan.metadata().doctorName());
         assertTrue(plan.metadata().keywords().contains("指南"));
         assertEquals(4, plan.changes().size());
@@ -45,7 +45,7 @@ class KnowledgeMetadataServiceTest {
         status.setSource("uploaded");
         status.setExtension("md");
         status.setDocType("GUIDE");
-        status.setDepartment("神经系统");
+        status.setDepartment("NEUROLOGY");
         status.setAudience("BOTH");
         status.setVersion("v2");
         status.setTitle("神经内科专家门诊");
@@ -58,6 +58,7 @@ class KnowledgeMetadataServiceTest {
         assertTrue(plan.changes().isEmpty());
         assertFalse(plan.skippedReasons().isEmpty());
         assertEquals("神经内科专家门诊", plan.metadata().title());
+        assertEquals("NEUROLOGY", plan.metadata().department());
         assertEquals("张三", plan.metadata().doctorName());
     }
 }

@@ -39,7 +39,11 @@ public class MongoChatMemoryStore implements ChatMemoryStore {
 
     @Override
     public List<ChatMessage> getMessages(Object memoryId) {
-        String normalizedMemoryId = normalizeMemoryId(memoryId);
+        Long normalizedMemoryId = normalizeMemoryId(memoryId);
+        if (normalizedMemoryId == null) {
+            log.debug("对话记忆获取 memoryId=null size=0");
+            return new LinkedList<>();
+        }
         Document chatMessages = collection.find(Filters.eq("memoryId", normalizedMemoryId)).first();
         if (chatMessages == null) {
             log.debug("对话记忆获取 memoryId={} size=0", normalizedMemoryId);
@@ -58,7 +62,11 @@ public class MongoChatMemoryStore implements ChatMemoryStore {
 
     @Override
     public void updateMessages(Object memoryId, List<ChatMessage> messages) {
-        String normalizedMemoryId = normalizeMemoryId(memoryId);
+        Long normalizedMemoryId = normalizeMemoryId(memoryId);
+        if (normalizedMemoryId == null) {
+            log.debug("对话记忆保存更新 memoryId=null size=0");
+            return;
+        }
         log.debug("对话记忆保存更新 memoryId={} size={}", normalizedMemoryId, messages == null ? 0 : messages.size());
         collection.updateOne(
                 Filters.eq("memoryId", normalizedMemoryId),
@@ -72,12 +80,29 @@ public class MongoChatMemoryStore implements ChatMemoryStore {
 
     @Override
     public void deleteMessages(Object memoryId) {
-        String normalizedMemoryId = normalizeMemoryId(memoryId);
+        Long normalizedMemoryId = normalizeMemoryId(memoryId);
+        if (normalizedMemoryId == null) {
+            return;
+        }
         log.debug("对话记忆删除 memoryId={}", normalizedMemoryId);
-        collection.deleteOne(Filters.eq("memoryId", normalizedMemoryId));
+        collection.deleteMany(Filters.eq("memoryId", normalizedMemoryId));
     }
 
-    private String normalizeMemoryId(Object memoryId) {
-        return memoryId == null ? "" : String.valueOf(memoryId);
+    private Long normalizeMemoryId(Object memoryId) {
+        if (memoryId == null) {
+            return null;
+        }
+        if (memoryId instanceof Number number) {
+            return number.longValue();
+        }
+        String value = String.valueOf(memoryId).trim();
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        try {
+            return Long.valueOf(value);
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException("非法 memoryId: " + value, exception);
+        }
     }
 }

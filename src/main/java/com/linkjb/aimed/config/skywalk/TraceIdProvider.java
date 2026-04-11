@@ -1,4 +1,4 @@
-package com.linkjb.aimed.config;
+package com.linkjb.aimed.config.skywalk;
 
 import org.apache.skywalking.apm.toolkit.trace.TraceContext;
 import org.springframework.stereotype.Component;

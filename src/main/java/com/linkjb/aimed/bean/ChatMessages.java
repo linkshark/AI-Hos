@@ -12,14 +12,14 @@ public class ChatMessages {
 //    private Long messageId;
 
     // 2. 聊天记忆id
-    private String memoryId;
+    private Long memoryId;
 
     private String content; //存储当前聊天记录列表的json字符串
 
     public ChatMessages() {
     }
 
-    public ChatMessages(ObjectId messageId, String memoryId, String content) {
+    public ChatMessages(ObjectId messageId, Long memoryId, String content) {
         this.messageId = messageId;
         this.memoryId = memoryId;
         this.content = content;
@@ -33,11 +33,11 @@ public class ChatMessages {
         this.messageId = messageId;
     }
 
-    public String getMemoryId() {
+    public Long getMemoryId() {
         return memoryId;
     }
 
-    public void setMemoryId(String memoryId) {
+    public void setMemoryId(Long memoryId) {
         this.memoryId = memoryId;
     }
 

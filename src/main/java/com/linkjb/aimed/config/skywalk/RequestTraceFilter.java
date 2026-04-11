@@ -1,4 +1,4 @@
-package com.linkjb.aimed.config;
+package com.linkjb.aimed.config.skywalk;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;

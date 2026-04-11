@@ -2,7 +2,7 @@ package com.linkjb.aimed.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.linkjb.aimed.bean.ChatProviderConfigResponse;
-import com.linkjb.aimed.config.TraceIdProvider;
+import com.linkjb.aimed.config.skywalk.TraceIdProvider;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

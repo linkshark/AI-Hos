@@ -1,5 +1,7 @@
 package com.linkjb.aimed.bean;
 
+import java.util.List;
+
 public record KnowledgeRetrievalDiagnosticHit(String fileHash,
                                               String segmentId,
                                               Integer segmentIndex,
@@ -12,5 +14,6 @@ public record KnowledgeRetrievalDiagnosticHit(String fileHash,
                                               double keywordScore,
                                               double vectorScore,
                                               double combinedScore,
-                                              String preview) {
+                                              String preview,
+                                              List<KnowledgeRetrievalScoreBreakdown> scoreBreakdown) {
 }

@@ -4,6 +4,8 @@ import com.linkjb.aimed.bean.chat.ChatStreamMetadata;
 import com.linkjb.aimed.bean.KnowledgeCitationItem;
 import com.linkjb.aimed.bean.KnowledgeRetrievalDiagnosticHit;
 import com.linkjb.aimed.bean.KnowledgeRetrievalDiagnosticResponse;
+import com.linkjb.aimed.bean.KnowledgeRetrievalScoreBreakdown;
+import com.linkjb.aimed.bean.KnowledgeRetrievalScoringRule;
 import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
@@ -65,16 +67,22 @@ public class HybridKnowledgeRetrieverService {
     private final int onlineVectorTopK;
     private final int onlineFinalTopK;
     private final double onlineVectorMinScore;
-    private final int localKeywordTopK;
-    private final int localVectorTopK;
     private final int localFinalTopK;
-    private final double localVectorMinScore;
 
-    @Value("${app.knowledge-base.search.online.skip-vector-when-keyword-strong:true}")
-    private boolean onlineSkipVectorWhenKeywordStrong = true;
-
-    @Value("${app.knowledge-base.search.online.keyword-only-min-hits:1}")
-    private int onlineKeywordOnlyMinHits = 1;
+    private static final String SCORE_KEY_KEYWORD = "keyword_score";
+    private static final String SCORE_KEY_VECTOR = "vector_score";
+    private static final String SCORE_KEY_EXACT_TITLE = "exact_title_or_filename";
+    private static final String SCORE_KEY_DOCTOR = "doctor_name";
+    private static final String SCORE_KEY_DEPARTMENT = "department";
+    private static final String SCORE_KEY_HOSPITAL_DOC = "hospital_document";
+    private static final String SCORE_KEY_AUDIENCE = "audience_match";
+    private static final double SCORE_WEIGHT_KEYWORD = 30.0;
+    private static final double SCORE_WEIGHT_VECTOR = 20.0;
+    private static final double SCORE_BONUS_EXACT_TITLE = 30.0;
+    private static final double SCORE_BONUS_DOCTOR = 25.0;
+    private static final double SCORE_BONUS_DEPARTMENT = 20.0;
+    private static final double SCORE_BONUS_HOSPITAL_DOC = 5.0;
+    private static final double SCORE_BONUS_AUDIENCE = 5.0;
 
     public HybridKnowledgeRetrieverService(JdbcTemplate jdbcTemplate,
                                            @Qualifier("knowledgeEmbeddingStore") EmbeddingStore<TextSegment> knowledgeEmbeddingStore,
@@ -83,10 +91,7 @@ public class HybridKnowledgeRetrieverService {
                                            @Value("${app.knowledge-base.search.vector-top-k:8}") int onlineVectorTopK,
                                            @Value("${app.knowledge-base.search.final-top-k:6}") int onlineFinalTopK,
                                            @Value("${app.knowledge-base.search.vector-min-score:0.35}") double onlineVectorMinScore,
-                                           @Value("${app.knowledge-base.search.local.keyword-top-k:4}") int localKeywordTopK,
-                                           @Value("${app.knowledge-base.search.local.vector-top-k:4}") int localVectorTopK,
-                                           @Value("${app.knowledge-base.search.local.final-top-k:3}") int localFinalTopK,
-                                           @Value("${app.knowledge-base.search.local.vector-min-score:0.55}") double localVectorMinScore) {
+                                           @Value("${app.knowledge-base.search.local.final-top-k:3}") int localFinalTopK) {
         this.jdbcTemplate = jdbcTemplate;
         this.knowledgeEmbeddingStore = knowledgeEmbeddingStore;
         this.knowledgeEmbeddingModel = knowledgeEmbeddingModel;
@@ -94,10 +99,7 @@ public class HybridKnowledgeRetrieverService {
         this.onlineVectorTopK = Math.max(1, onlineVectorTopK);
         this.onlineFinalTopK = Math.max(1, onlineFinalTopK);
         this.onlineVectorMinScore = Math.max(0.0, onlineVectorMinScore);
-        this.localKeywordTopK = Math.max(1, localKeywordTopK);
-        this.localVectorTopK = Math.max(1, localVectorTopK);
         this.localFinalTopK = Math.max(1, localFinalTopK);
-        this.localVectorMinScore = Math.max(0.0, localVectorMinScore);
     }
 
     public List<Content> retrieve(Query query) {
@@ -138,19 +140,16 @@ public class HybridKnowledgeRetrieverService {
         long keywordStartedAt = System.nanoTime();
         List<RetrievedChunk> keywordHits = searchByKeyword(normalizedQuery, audience, searchProfile.keywordTopK());
         long keywordDurationMs = millisSince(keywordStartedAt);
-        boolean skipVector = shouldSkipVectorSearch(profile, normalizedQuery, queryType, keywordHits);
         long vectorStartedAt = System.nanoTime();
-        List<RetrievedChunk> vectorHits = skipVector
-                ? List.of()
-                : searchByVector(normalizedQuery, audience, searchProfile.vectorTopK(), searchProfile.vectorMinScore());
-        long vectorDurationMs = skipVector ? 0 : millisSince(vectorStartedAt);
+        List<RetrievedChunk> vectorHits = searchByVector(normalizedQuery, audience, searchProfile.vectorTopK(), searchProfile.vectorMinScore());
+        long vectorDurationMs = millisSince(vectorStartedAt);
         long mergeStartedAt = System.nanoTime();
         List<RetrievedChunk> merged = rerankAndMerge(keywordHits, vectorHits, normalizedQuery, audience, searchProfile.finalTopK());
         long mergeDurationMs = millisSince(mergeStartedAt);
         long totalDurationMs = millisSince(startedAt);
 
         logSlowSearch(profile, queryType, normalizedQuery, keywordHits.size(), vectorHits.size(),
-                skipVector, keywordDurationMs, vectorDurationMs, mergeDurationMs, totalDurationMs);
+                false, keywordDurationMs, vectorDurationMs, mergeDurationMs, totalDurationMs);
 
         RetrievalSummary summary = new RetrievalSummary(
                 queryType,
@@ -160,7 +159,7 @@ public class HybridKnowledgeRetrieverService {
                 merged.isEmpty(),
                 totalDurationMs,
                 merged,
-                new RetrievalTimings(keywordDurationMs, vectorDurationMs, mergeDurationMs, skipVector)
+                new RetrievalTimings(keywordDurationMs, vectorDurationMs, mergeDurationMs, false)
         );
         LAST_SUMMARY.set(summary);
         return summary;
@@ -176,10 +175,7 @@ public class HybridKnowledgeRetrieverService {
         List<String> keywordTokens = buildKeywordTokens(normalizedQuery);
         String booleanQuery = buildBooleanFullTextQuery(normalizedQuery, keywordTokens);
         List<RetrievedChunk> keywordHits = searchByKeyword(normalizedQuery, audience, searchProfile.keywordTopK());
-        boolean skipVector = shouldSkipVectorSearch(profile, normalizedQuery, queryType, keywordHits);
-        List<RetrievedChunk> vectorHits = skipVector
-                ? List.of()
-                : searchByVector(normalizedQuery, audience, searchProfile.vectorTopK(), searchProfile.vectorMinScore());
+        List<RetrievedChunk> vectorHits = searchByVector(normalizedQuery, audience, searchProfile.vectorTopK(), searchProfile.vectorMinScore());
         List<RetrievedChunk> finalHits = rerankAndMerge(keywordHits, vectorHits, normalizedQuery, audience, searchProfile.finalTopK());
         long durationMs = millisSince(startedAt);
 
@@ -192,6 +188,7 @@ public class HybridKnowledgeRetrieverService {
                 booleanQuery,
                 durationMs,
                 finalHits.isEmpty(),
+                scoringRules(),
                 keywordTokens,
                 keywordHits.stream().map(this::toDiagnosticHit).toList(),
                 vectorHits.stream().map(this::toDiagnosticHit).toList(),
@@ -250,7 +247,8 @@ public class HybridKnowledgeRetrieverService {
                 hit.keywordScore(),
                 hit.vectorScore(),
                 hit.combinedScore(),
-                hit.preview()
+                hit.preview(),
+                hit.scoreBreakdown()
         );
     }
 
@@ -258,6 +256,7 @@ public class HybridKnowledgeRetrieverService {
         if (!StringUtils.hasText(normalizedQuery)) {
             return List.of();
         }
+        //扩词
         List<String> tokens = buildKeywordTokens(normalizedQuery);
         if (tokens.isEmpty()) {
             return List.of();
@@ -428,6 +427,7 @@ public class HybridKnowledgeRetrieverService {
                     0.0,
                     match.score(),
                     "vector",
+                    List.of(),
                     metadata
             ));
         }
@@ -446,7 +446,7 @@ public class HybridKnowledgeRetrieverService {
         vectorHits.forEach(hit -> merged.merge(dedupeKey(hit), hit, this::mergeHit));
 
         return merged.values().stream()
-                .map(hit -> hit.withCombinedScore(scoreHit(hit, query, audience)))
+                .map(hit -> hit.withCombinedScore(scoreHit(hit, query, audience), scoreBreakdown(hit, query, audience)))
                 .sorted(Comparator.comparingDouble(RetrievedChunk::combinedScore).reversed()
                         .thenComparing(RetrievedChunk::sourcePriority, Comparator.nullsLast(Comparator.reverseOrder()))
                         .thenComparing(RetrievedChunk::updatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
@@ -456,7 +456,7 @@ public class HybridKnowledgeRetrieverService {
 
     private SearchProfile resolveProfile(RetrievalProfile profile) {
         if (profile == RetrievalProfile.LOCAL) {
-            return new SearchProfile(localKeywordTopK, localVectorTopK, localFinalTopK, localVectorMinScore);
+            return new SearchProfile(onlineKeywordTopK, onlineVectorTopK, localFinalTopK, onlineVectorMinScore);
         }
         return new SearchProfile(onlineKeywordTopK, onlineVectorTopK, onlineFinalTopK, onlineVectorMinScore);
     }
@@ -483,33 +483,73 @@ public class HybridKnowledgeRetrieverService {
                 Math.max(left.keywordScore(), right.keywordScore()),
                 Math.max(left.vectorScore(), right.vectorScore()),
                 left.retrievalType().equals(right.retrievalType()) ? left.retrievalType() : "hybrid",
+                left.scoreBreakdown(),
                 left.metadata()
         );
     }
 
     private double scoreHit(RetrievedChunk hit, String query, String audience) {
+        return scoreBreakdown(hit, query, audience).stream()
+                .mapToDouble(KnowledgeRetrievalScoreBreakdown::contribution)
+                .sum();
+    }
+
+    private List<KnowledgeRetrievalScoreBreakdown> scoreBreakdown(RetrievedChunk hit, String query, String audience) {
         // 这里的打分故意保持“解释性优先”，便于后面线上排查为什么某条文档被排到前面。
         // 目前先用规则重排，等这套规则稳定后，再评估是否有必要接入更重的模型 reranker。
-        double score = hit.keywordScore() * 30 + hit.vectorScore() * 20;
+        List<KnowledgeRetrievalScoreBreakdown> breakdown = new ArrayList<>();
+        addScoreBreakdown(breakdown, SCORE_KEY_KEYWORD, "关键词分", SCORE_WEIGHT_KEYWORD, hit.keywordScore(),
+                "关键词召回基础分 × 关键词权重");
+        addScoreBreakdown(breakdown, SCORE_KEY_VECTOR, "向量分", SCORE_WEIGHT_VECTOR, hit.vectorScore(),
+                "向量相似度 × 向量权重");
         String lowerQuery = lower(query);
         String lowerTitle = lower(hit.title());
         String lowerDocumentName = lower(hit.documentName());
         if (StringUtils.hasText(lowerQuery) && (lowerTitle.contains(lowerQuery) || lowerDocumentName.contains(lowerQuery))) {
-            score += 30;
+            addScoreBreakdown(breakdown, SCORE_KEY_EXACT_TITLE, "标题/文件名精确命中", SCORE_BONUS_EXACT_TITLE, 1.0,
+                    "规范化问题完整出现在标题或文件名中");
         }
         if (StringUtils.hasText(query) && StringUtils.hasText(hit.doctorName()) && query.contains(hit.doctorName())) {
-            score += 25;
+            addScoreBreakdown(breakdown, SCORE_KEY_DOCTOR, "医生命中", SCORE_BONUS_DOCTOR, 1.0,
+                    "问题中包含该文档关联医生或专家名称");
         }
         if (StringUtils.hasText(query) && StringUtils.hasText(hit.department()) && query.contains(hit.department())) {
-            score += 20;
+            addScoreBreakdown(breakdown, SCORE_KEY_DEPARTMENT, "科室命中", SCORE_BONUS_DEPARTMENT, 1.0,
+                    "问题中包含该文档关联科室");
         }
         if (StringUtils.hasText(hit.documentName()) && hit.documentName().contains("树兰")) {
-            score += 5;
+            addScoreBreakdown(breakdown, SCORE_KEY_HOSPITAL_DOC, "院内文档加权", SCORE_BONUS_HOSPITAL_DOC, 1.0,
+                    "文件名包含树兰，优先院内知识");
         }
         if (allowAudience(audience, hit.audience())) {
-            score += 5;
+            addScoreBreakdown(breakdown, SCORE_KEY_AUDIENCE, "适用对象匹配", SCORE_BONUS_AUDIENCE, 1.0,
+                    "文档适用对象与当前用户身份匹配");
         }
-        return score;
+        return breakdown;
+    }
+
+    private void addScoreBreakdown(List<KnowledgeRetrievalScoreBreakdown> breakdown,
+                                   String key,
+                                   String label,
+                                   double weight,
+                                   double basis,
+                                   String description) {
+        if (basis <= 0) {
+            return;
+        }
+        breakdown.add(new KnowledgeRetrievalScoreBreakdown(key, label, weight, basis, weight * basis, description));
+    }
+
+    private List<KnowledgeRetrievalScoringRule> scoringRules() {
+        return List.of(
+                new KnowledgeRetrievalScoringRule(SCORE_KEY_KEYWORD, "关键词分", SCORE_WEIGHT_KEYWORD, "关键词召回基础分 × 关键词权重"),
+                new KnowledgeRetrievalScoringRule(SCORE_KEY_VECTOR, "向量分", SCORE_WEIGHT_VECTOR, "向量相似度 × 向量权重"),
+                new KnowledgeRetrievalScoringRule(SCORE_KEY_EXACT_TITLE, "标题/文件名精确命中", SCORE_BONUS_EXACT_TITLE, "规范化问题完整出现在标题或文件名中时加分"),
+                new KnowledgeRetrievalScoringRule(SCORE_KEY_DOCTOR, "医生命中", SCORE_BONUS_DOCTOR, "问题中包含文档关联医生或专家名称时加分"),
+                new KnowledgeRetrievalScoringRule(SCORE_KEY_DEPARTMENT, "科室命中", SCORE_BONUS_DEPARTMENT, "问题中包含文档关联科室时加分"),
+                new KnowledgeRetrievalScoringRule(SCORE_KEY_HOSPITAL_DOC, "院内文档加权", SCORE_BONUS_HOSPITAL_DOC, "文件名包含树兰时加分，优先院内知识"),
+                new KnowledgeRetrievalScoringRule(SCORE_KEY_AUDIENCE, "适用对象匹配", SCORE_BONUS_AUDIENCE, "文档适用对象与当前用户身份匹配时加分")
+        );
     }
 
     private double computeKeywordScore(RetrievedChunk hit, String query, Collection<String> tokens) {
@@ -547,40 +587,6 @@ public class HybridKnowledgeRetrieverService {
             }
         }
         return score;
-    }
-
-    private boolean shouldSkipVectorSearch(RetrievalProfile profile,
-                                           String normalizedQuery,
-                                           String queryType,
-                                           List<RetrievedChunk> keywordHits) {
-        if (profile != RetrievalProfile.ONLINE || !onlineSkipVectorWhenKeywordStrong) {
-            return false;
-        }
-        if (keywordHits == null || keywordHits.size() < Math.max(1, onlineKeywordOnlyMinHits)) {
-            return false;
-        }
-        if ("DOCTOR".equals(queryType) || "DEPARTMENT".equals(queryType) || "GUIDE".equals(queryType) || "PROCESS".equals(queryType)) {
-            return true;
-        }
-        if (looksLikeVersionOrTitleQuery(normalizedQuery)) {
-            return true;
-        }
-        RetrievedChunk topHit = keywordHits.get(0);
-        String lowerQuery = lower(normalizedQuery);
-        return topHit.keywordScore() >= 3.5
-                && StringUtils.hasText(lowerQuery)
-                && (lower(topHit.title()).contains(lowerQuery) || lower(topHit.documentName()).contains(lowerQuery));
-    }
-
-    private boolean looksLikeVersionOrTitleQuery(String query) {
-        if (!StringUtils.hasText(query)) {
-            return false;
-        }
-        return query.matches(".*20\\d{2}.*")
-                || query.contains("指南")
-                || query.contains("规范")
-                || query.contains("共识")
-                || query.matches(".*v\\d+(\\.\\d+)?[a-zA-Z0-9]*.*");
     }
 
     private long millisSince(long startedAt) {
@@ -658,6 +664,7 @@ public class HybridKnowledgeRetrieverService {
                 keywordScore,
                 vectorScore,
                 retrievalType,
+                List.of(),
                 metadata
         );
     }
@@ -799,23 +806,24 @@ public class HybridKnowledgeRetrieverService {
                                  double keywordScore,
                                  double vectorScore,
                                  String retrievalType,
+                                 List<KnowledgeRetrievalScoreBreakdown> scoreBreakdown,
                                  Metadata metadata) {
         public double combinedScore() {
             return metadata == null ? 0.0 : ((Number) metadata.toMap().getOrDefault("combined_score", 0.0)).doubleValue();
         }
 
-        public RetrievedChunk withCombinedScore(double score) {
+        public RetrievedChunk withCombinedScore(double score, List<KnowledgeRetrievalScoreBreakdown> scoreBreakdown) {
             Metadata copied = metadata == null ? new Metadata() : metadata.copy();
             copied.put("combined_score", score);
             return new RetrievedChunk(fileHash, segmentId, segmentIndex, title, docType, department, audience, version,
                     effectiveAt, status, doctorName, sourcePriority, keywords, documentName, updatedAt, content,
-                    preview, keywordScore, vectorScore, retrievalType, copied);
+                    preview, keywordScore, vectorScore, retrievalType, scoreBreakdown == null ? List.of() : scoreBreakdown, copied);
         }
 
         public RetrievedChunk withKeywordScore(double score) {
             return new RetrievedChunk(fileHash, segmentId, segmentIndex, title, docType, department, audience, version,
                     effectiveAt, status, doctorName, sourcePriority, keywords, documentName, updatedAt, content,
-                    preview, score, vectorScore, retrievalType, metadata);
+                    preview, score, vectorScore, retrievalType, scoreBreakdown, metadata);
         }
     }
 

@@ -7,7 +7,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.linkjb.aimed.bean.AuditLogItem;
 import com.linkjb.aimed.bean.PagedResponse;
 import com.linkjb.aimed.bean.chat.ChatStreamMetadata;
-import com.linkjb.aimed.config.TraceIdProvider;
+import com.linkjb.aimed.config.skywalk.TraceIdProvider;
 import com.linkjb.aimed.entity.AppUser;
 import com.linkjb.aimed.entity.AuditLog;
 import com.linkjb.aimed.mapper.AuditLogMapper;

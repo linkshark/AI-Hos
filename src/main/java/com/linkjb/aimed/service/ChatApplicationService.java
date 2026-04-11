@@ -8,8 +8,8 @@ import com.linkjb.aimed.assistant.LocalStreamingAiMedAgent;
 import com.linkjb.aimed.assistant.OnlineFastAiMedAgent;
 import com.linkjb.aimed.assistant.OnlineAiMedAgent;
 import com.linkjb.aimed.bean.ChatProviderConfigResponse;
-import com.linkjb.aimed.config.RequestTraceFilter;
-import com.linkjb.aimed.config.TraceIdProvider;
+import com.linkjb.aimed.config.skywalk.RequestTraceFilter;
+import com.linkjb.aimed.config.skywalk.TraceIdProvider;
 import dev.langchain4j.service.TokenStream;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import org.apache.skywalking.apm.toolkit.trace.ActiveSpan;
@@ -18,7 +18,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
@@ -392,7 +391,7 @@ public class ChatApplicationService {
                         "向量召回",
                         timings.vectorDurationMs(),
                         timings.vectorSkipped() ? "SKIPPED" : "DONE",
-                        timings.vectorSkipped() ? "本次命中强关键词，已跳过向量阶段" : "执行向量检索"
+                        timings.vectorSkipped() ? "未执行向量检索" : "执行向量检索"
                 ));
                 stages.add(new ChatTraceStage("retrieve_merge", "结果合并", timings.mergeDurationMs(), "DONE",
                         "merged=" + retrievalSummary.mergedCount()));

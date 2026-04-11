@@ -1,5 +1,6 @@
 package com.linkjb.aimed.config;
 
+import com.linkjb.aimed.service.DeptInfoService;
 import jakarta.annotation.PostConstruct;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
@@ -112,7 +113,21 @@ public class KnowledgeFileSchemaInitializer {
         createFulltextIndexIfMissing();
         dropKnowledgeChunkColumnIfExists("local_embedding");
         dropKnowledgeChunkColumnIfExists("online_embedding");
+        normalizeGeneralDepartment();
         ensureColumnComments();
+    }
+
+    private void normalizeGeneralDepartment() {
+        jdbcTemplate.update("""
+                UPDATE knowledge_file_status
+                SET department = ?
+                WHERE department IS NULL OR TRIM(department) = '' OR department = ?
+                """, DeptInfoService.GENERAL_DEPT_CODE, DeptInfoService.GENERAL_DEPT_NAME);
+        jdbcTemplate.update("""
+                UPDATE knowledge_chunk_index
+                SET department = ?
+                WHERE department IS NULL OR TRIM(department) = '' OR department = ?
+                """, DeptInfoService.GENERAL_DEPT_CODE, DeptInfoService.GENERAL_DEPT_NAME);
     }
 
     private void ensureColumnComments() {

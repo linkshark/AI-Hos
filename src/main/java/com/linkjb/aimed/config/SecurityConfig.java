@@ -2,6 +2,7 @@ package com.linkjb.aimed.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.linkjb.aimed.bean.ApiErrorResponse;
+import com.linkjb.aimed.config.skywalk.RequestTraceFilter;
 import com.linkjb.aimed.security.JwtAuthenticationFilter;
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletRequest;
@@ -65,6 +66,8 @@ public class SecurityConfig {
                                 "/aimed/auth/refresh"
                         ).permitAll()
                         .requestMatchers("/aimed/auth/me", "/aimed/auth/logout").authenticated()
+                        .requestMatchers(HttpMethod.GET, "/aimed/dept/tree").authenticated()
+                        .requestMatchers("/aimed/dept/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.POST, "/aimed/chat/sessions").authenticated()
                         .requestMatchers(HttpMethod.GET, "/aimed/chat/provider-config").authenticated()
                         .requestMatchers(HttpMethod.GET, "/aimed/chat/histories", "/aimed/chat/histories/*").authenticated()

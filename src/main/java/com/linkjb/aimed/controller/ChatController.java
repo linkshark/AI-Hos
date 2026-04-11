@@ -10,7 +10,7 @@ import com.linkjb.aimed.bean.chat.ChatHistoryPinRequest;
 import com.linkjb.aimed.bean.chat.ChatHistoryRenameRequest;
 import com.linkjb.aimed.bean.ChatProviderConfigResponse;
 import com.linkjb.aimed.bean.chat.ChatStreamMetadata;
-import com.linkjb.aimed.config.TraceIdProvider;
+import com.linkjb.aimed.config.skywalk.TraceIdProvider;
 import com.linkjb.aimed.security.AuthenticatedUser;
 import com.linkjb.aimed.service.ChatSessionUserBindingService;
 import com.linkjb.aimed.service.ChatApplicationService;

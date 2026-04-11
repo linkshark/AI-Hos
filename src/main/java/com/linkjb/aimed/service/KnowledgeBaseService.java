@@ -110,6 +110,7 @@ public class KnowledgeBaseService {
     private final KnowledgeChunkIndexService knowledgeChunkIndexService;
     private final KnowledgeMetadataService knowledgeMetadataService;
     private final KnowledgeIndexingService knowledgeIndexingService;
+    private final DeptInfoService deptInfoService;
     private final ObjectMapper objectMapper;
     private final Set<String> ingestedHashes = ConcurrentHashMap.newKeySet();
     private final Map<String, KnowledgeDocumentRecord> knowledgeRecords = new ConcurrentHashMap<>();
@@ -133,6 +134,7 @@ public class KnowledgeBaseService {
                                 KnowledgeChunkIndexService knowledgeChunkIndexService,
                                 KnowledgeMetadataService knowledgeMetadataService,
                                 KnowledgeIndexingService knowledgeIndexingService,
+                                DeptInfoService deptInfoService,
                                 ObjectMapper objectMapper,
                                 @Value("${app.embedding.batch-size:24}") int embeddingBatchSize,
                                 @Value("${app.embedding.model-name:bge-m3:latest}") String embeddingModelName,
@@ -147,6 +149,7 @@ public class KnowledgeBaseService {
         this.knowledgeChunkIndexService = knowledgeChunkIndexService;
         this.knowledgeMetadataService = knowledgeMetadataService;
         this.knowledgeIndexingService = knowledgeIndexingService;
+        this.deptInfoService = deptInfoService;
         this.objectMapper = objectMapper;
         this.embeddingBatchSize = Math.max(1, embeddingBatchSize);
         this.embeddingModelName = embeddingModelName;
@@ -229,9 +232,14 @@ public class KnowledgeBaseService {
             if (status == null || !StringUtils.hasText(status.getHash())) {
                 continue;
             }
+            String normalizedDepartment = normalizeStoredKnowledgeDeptCode(status.getDepartment());
+            boolean departmentMissing = !StringUtils.hasText(status.getDepartment())
+                    || DeptInfoService.GENERAL_DEPT_NAME.equals(status.getDepartment())
+                    || !normalizedDepartment.equals(status.getDepartment());
             boolean metadataMissing = !StringUtils.hasText(status.getDocType())
                     || !StringUtils.hasText(status.getAudience())
-                    || !StringUtils.hasText(status.getTitle());
+                    || !StringUtils.hasText(status.getTitle())
+                    || departmentMissing;
             boolean legacyReady = STATUS_READY.equals(status.getProcessingStatus());
             if (!metadataMissing && !legacyReady) {
                 continue;
@@ -240,7 +248,7 @@ public class KnowledgeBaseService {
                     buildDefaultMetadata(status.getOriginalFilename(), status.getSource(), status.getExtension()),
                     new KnowledgeFileMetadata(
                             status.getDocType(),
-                            status.getDepartment(),
+                            normalizedDepartment,
                             status.getAudience(),
                             status.getVersion(),
                             status.getEffectiveAt(),
@@ -376,9 +384,18 @@ public class KnowledgeBaseService {
     }
 
     private void applyMetadataPlan(KnowledgeFileStatus status, KnowledgeFileMetadata metadata) {
+        applyKnowledgeMetadata(status, metadata);
+    }
+
+    private void applyKnowledgeMetadata(KnowledgeFileStatus status, KnowledgeFileMetadata metadata) {
+        status.setDocType(metadata.docType());
         status.setTitle(metadata.title());
         status.setDepartment(metadata.department());
+        status.setAudience(metadata.audience());
+        status.setVersion(metadata.version());
+        status.setEffectiveAt(metadata.effectiveAt());
         status.setDoctorName(metadata.doctorName());
+        status.setSourcePriority(metadata.sourcePriority());
         status.setKeywords(metadata.keywords());
         knowledgeFileStatusService.saveOrUpdate(status);
         knowledgeChunkIndexService.updateMetadataByHash(
@@ -410,14 +427,14 @@ public class KnowledgeBaseService {
                 existing.progressPercent(),
                 existing.currentBatch(),
                 existing.totalBatches(),
-                existing.docType(),
+                status.getDocType(),
                 status.getDepartment(),
-                existing.audience(),
-                existing.version(),
-                existing.effectiveAt(),
+                status.getAudience(),
+                status.getVersion(),
+                status.getEffectiveAt(),
                 status.getTitle(),
                 status.getDoctorName(),
-                existing.sourcePriority(),
+                status.getSourcePriority(),
                 status.getKeywords(),
                 existing.extractedText(),
                 existing.chunks(),
@@ -506,6 +523,9 @@ public class KnowledgeBaseService {
         if (!isEditableStatus(record.processingStatus())) {
             throw new IOException("当前知识文件仍在处理中，暂不支持编辑");
         }
+        if (request != null && request.getContent() == null) {
+            return updateKnowledgeMetadataOnly(hash, record, request);
+        }
         if (!record.editable()) {
             throw new IOException("当前文件格式不支持在线编辑，请删除后重新上传");
         }
@@ -543,10 +563,13 @@ public class KnowledgeBaseService {
             ingestedHashes.remove(hash);
             knowledgeRecords.remove(hash);
             ParsedKnowledge parsedKnowledge = parseFile(storedFile, record.originalFilename(), newHash);
+            String department = request == null || request.getDepartment() == null
+                    ? normalizeStoredKnowledgeDeptCode(record.department())
+                    : deptInfoService.normalizeKnowledgeDeptCode(request.getDepartment());
             KnowledgeFileMetadata metadata = mergeMetadata(buildDefaultMetadata(record.originalFilename(), record.source(), record.extension()),
                     new KnowledgeFileMetadata(
                             request == null ? record.docType() : request.getDocType(),
-                            request == null ? record.department() : request.getDepartment(),
+                            department,
                             request == null ? record.audience() : request.getAudience(),
                             request == null ? record.version() : request.getVersion(),
                             request == null ? record.effectiveAt() : parseDateTime(request.getEffectiveAt()),
@@ -578,6 +601,18 @@ public class KnowledgeBaseService {
         } finally {
             Files.deleteIfExists(tempFile);
         }
+    }
+
+    private KnowledgeDocumentDetail updateKnowledgeMetadataOnly(String hash,
+                                                               KnowledgeDocumentRecord record,
+                                                               KnowledgeUpdateRequest request) throws IOException {
+        KnowledgeFileStatus status = knowledgeFileStatusService.findByHash(hash);
+        if (status == null) {
+            throw new IOException("未找到对应的知识文件");
+        }
+        KnowledgeFileMetadata metadata = buildRequestedMetadata(record, request);
+        applyKnowledgeMetadata(status, metadata);
+        return getKnowledgeDetail(hash);
     }
 
     public synchronized void deleteKnowledge(String hash) throws IOException {
@@ -1784,6 +1819,36 @@ public class KnowledgeBaseService {
      */
     private KnowledgeFileMetadata mergeMetadata(KnowledgeFileMetadata base, KnowledgeFileMetadata override) {
         return knowledgeMetadataService.mergeMetadata(base, override);
+    }
+
+    private String normalizeStoredKnowledgeDeptCode(String department) {
+        try {
+            return deptInfoService.normalizeKnowledgeDeptCode(department);
+        } catch (IllegalArgumentException exception) {
+            return DeptInfoService.GENERAL_DEPT_CODE;
+        }
+    }
+
+    private KnowledgeFileMetadata buildRequestedMetadata(KnowledgeDocumentRecord record, KnowledgeUpdateRequest request) {
+        String department = request == null || request.getDepartment() == null
+                ? normalizeStoredKnowledgeDeptCode(record.department())
+                : deptInfoService.normalizeKnowledgeDeptCode(request.getDepartment());
+        return mergeMetadata(buildDefaultMetadata(record.originalFilename(), record.source(), record.extension()),
+                new KnowledgeFileMetadata(
+                        chooseRequestValue(request == null ? null : request.getDocType(), record.docType()),
+                        department,
+                        chooseRequestValue(request == null ? null : request.getAudience(), record.audience()),
+                        chooseRequestValue(request == null ? null : request.getVersion(), record.version()),
+                        request == null || request.getEffectiveAt() == null ? record.effectiveAt() : parseDateTime(request.getEffectiveAt()),
+                        chooseRequestValue(request == null ? null : request.getTitle(), record.title()),
+                        chooseRequestValue(request == null ? null : request.getDoctorName(), record.doctorName()),
+                        request == null || request.getSourcePriority() == null ? record.sourcePriority() : request.getSourcePriority(),
+                        chooseRequestValue(request == null ? null : request.getKeywords(), record.keywords())
+                ));
+    }
+
+    private String chooseRequestValue(String requestValue, String existingValue) {
+        return requestValue == null ? existingValue : requestValue;
     }
 
     private LocalDateTime parseDateTime(String value) {

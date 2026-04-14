@@ -71,6 +71,7 @@ public class HybridKnowledgeRetrieverService {
 
     private static final String SCORE_KEY_KEYWORD = "keyword_score";
     private static final String SCORE_KEY_VECTOR = "vector_score";
+    private static final String SCORE_KEY_CORE_PHRASE = "core_phrase";
     private static final String SCORE_KEY_EXACT_TITLE = "exact_title_or_filename";
     private static final String SCORE_KEY_DOCTOR = "doctor_name";
     private static final String SCORE_KEY_DEPARTMENT = "department";
@@ -78,6 +79,7 @@ public class HybridKnowledgeRetrieverService {
     private static final String SCORE_KEY_AUDIENCE = "audience_match";
     private static final double SCORE_WEIGHT_KEYWORD = 30.0;
     private static final double SCORE_WEIGHT_VECTOR = 20.0;
+    private static final double SCORE_BONUS_CORE_PHRASE = 35.0;
     private static final double SCORE_BONUS_EXACT_TITLE = 30.0;
     private static final double SCORE_BONUS_DOCTOR = 25.0;
     private static final double SCORE_BONUS_DEPARTMENT = 20.0;
@@ -168,10 +170,12 @@ public class HybridKnowledgeRetrieverService {
     public KnowledgeRetrievalDiagnosticResponse diagnose(String rawQuery, String profileValue) {
         RetrievalProfile profile = "LOCAL".equalsIgnoreCase(profileValue) ? RetrievalProfile.LOCAL : RetrievalProfile.ONLINE;
         long startedAt = System.nanoTime();
+        //规范化搜索查询(把废话删掉)
         String normalizedQuery = normalizeQuery(rawQuery);
         String audience = resolveAudience();
         String queryType = classifyQuery(normalizedQuery);
         SearchProfile searchProfile = resolveProfile(profile);
+        //创建关键词的词根,
         List<String> keywordTokens = buildKeywordTokens(normalizedQuery);
         String booleanQuery = buildBooleanFullTextQuery(normalizedQuery, keywordTokens);
         List<RetrievedChunk> keywordHits = searchByKeyword(normalizedQuery, audience, searchProfile.keywordTopK());
@@ -320,8 +324,8 @@ public class HybridKnowledgeRetrieverService {
                   AND (k.audience = 'BOTH' OR k.audience = ? OR ? = 'ADMIN')
                   AND (""" + whereLikeClause + """
                   )
-                ORDER BY k.source_priority DESC, f.updated_at DESC
-                LIMIT 80
+                ORDER BY f.updated_at DESC
+                LIMIT ?
                 """;
         List<Object> args = new ArrayList<>();
         args.add(audience);
@@ -332,6 +336,7 @@ public class HybridKnowledgeRetrieverService {
             args.add(likeToken);
             args.add(likeToken);
         }
+        args.add(Math.max(topK * 32, 256));
         List<RetrievedChunk> roughHits = jdbcTemplate.query(fallbackSql,
                 (rs, rowNum) -> mapRetrievedChunk(rs, "keyword", 0.0, 0.0),
                 args.toArray());
@@ -347,28 +352,21 @@ public class HybridKnowledgeRetrieverService {
 
     private String buildBooleanFullTextQuery(String normalizedQuery, List<String> tokens) {
         List<String> clauses = new ArrayList<>();
-        if (StringUtils.hasText(normalizedQuery)) {
-            String compact = normalizedQuery.replaceAll("\\s+", " ").trim();
-            if (compact.length() >= 2) {
-                clauses.add("\"" + compact + "\"");
-            }
-        }
         List<String> prioritized = tokens.stream()
                 .map(String::trim)
-                .filter(token -> token.length() >= 2)
+                .filter(this::isUsefulFullTextToken)
                 .distinct()
                 .sorted(Comparator
-                        .comparingInt((String token) -> token.matches(".*20\\d{2}.*") ? 100 : 0)
+                        .comparingInt(this::fullTextTokenPriority)
                         .thenComparingInt(String::length)
                         .reversed())
                 .toList();
         prioritized.stream()
-                .filter(token -> token.length() >= 3 || token.matches(".*20\\d{2}.*"))
-                .limit(4)
+                .filter(token -> fullTextTokenPriority(token) >= 50)
+                .limit(1)
                 .forEach(token -> clauses.add("+" + token + "*"));
         prioritized.stream()
-                .filter(token -> token.length() >= 2)
-                .limit(4)
+                .limit(6)
                 .forEach(token -> {
                     String optionalClause = token + "*";
                     if (!clauses.contains(optionalClause) && !clauses.contains("+" + optionalClause)) {
@@ -502,6 +500,10 @@ public class HybridKnowledgeRetrieverService {
                 "关键词召回基础分 × 关键词权重");
         addScoreBreakdown(breakdown, SCORE_KEY_VECTOR, "向量分", SCORE_WEIGHT_VECTOR, hit.vectorScore(),
                 "向量相似度 × 向量权重");
+        if (corePhraseMatchScore(hit, query) > 0) {
+            addScoreBreakdown(breakdown, SCORE_KEY_CORE_PHRASE, "核心短语命中", SCORE_BONUS_CORE_PHRASE, 1.0,
+                    "标题、文件名或关键词命中疾病/指南核心短语");
+        }
         String lowerQuery = lower(query);
         String lowerTitle = lower(hit.title());
         String lowerDocumentName = lower(hit.documentName());
@@ -544,6 +546,7 @@ public class HybridKnowledgeRetrieverService {
         return List.of(
                 new KnowledgeRetrievalScoringRule(SCORE_KEY_KEYWORD, "关键词分", SCORE_WEIGHT_KEYWORD, "关键词召回基础分 × 关键词权重"),
                 new KnowledgeRetrievalScoringRule(SCORE_KEY_VECTOR, "向量分", SCORE_WEIGHT_VECTOR, "向量相似度 × 向量权重"),
+                new KnowledgeRetrievalScoringRule(SCORE_KEY_CORE_PHRASE, "核心短语命中", SCORE_BONUS_CORE_PHRASE, "标题、文件名或关键词命中疾病/指南核心短语时加分"),
                 new KnowledgeRetrievalScoringRule(SCORE_KEY_EXACT_TITLE, "标题/文件名精确命中", SCORE_BONUS_EXACT_TITLE, "规范化问题完整出现在标题或文件名中时加分"),
                 new KnowledgeRetrievalScoringRule(SCORE_KEY_DOCTOR, "医生命中", SCORE_BONUS_DOCTOR, "问题中包含文档关联医生或专家名称时加分"),
                 new KnowledgeRetrievalScoringRule(SCORE_KEY_DEPARTMENT, "科室命中", SCORE_BONUS_DEPARTMENT, "问题中包含文档关联科室时加分"),
@@ -559,6 +562,21 @@ public class HybridKnowledgeRetrieverService {
         String haystackContent = lower(hit.content());
         String haystackKeywords = lower(hit.keywords());
         String lowerQuery = lower(query);
+        for (String coreTerm : coreQueryTerms(query)) {
+            String lowerTerm = lower(coreTerm);
+            if (haystackTitle.contains(lowerTerm)) {
+                score += 2.6;
+            }
+            if (haystackDocumentName.contains(lowerTerm)) {
+                score += 3.0;
+            }
+            if (haystackKeywords.contains(lowerTerm)) {
+                score += 1.8;
+            }
+            if (haystackContent.contains(lowerTerm)) {
+                score += 0.8;
+            }
+        }
         if (StringUtils.hasText(lowerQuery) && haystackTitle.contains(lowerQuery)) {
             score += 1.4;
         }
@@ -589,6 +607,47 @@ public class HybridKnowledgeRetrieverService {
         return score;
     }
 
+    private double corePhraseMatchScore(RetrievedChunk hit, String query) {
+        String haystackTitle = lower(hit.title());
+        String haystackDocumentName = lower(hit.documentName());
+        String haystackKeywords = lower(hit.keywords());
+        for (String coreTerm : coreQueryTerms(query)) {
+            String lowerTerm = lower(coreTerm);
+            if (haystackTitle.contains(lowerTerm) || haystackDocumentName.contains(lowerTerm) || haystackKeywords.contains(lowerTerm)) {
+                return 1.0;
+            }
+        }
+        return 0.0;
+    }
+
+    private List<String> coreQueryTerms(String query) {
+        return KnowledgeSearchLexicon.extractCoreQueryTokens(query);
+    }
+
+    private boolean isUsefulFullTextToken(String token) {
+        return StringUtils.hasText(token) && token.trim().length() >= 2 && token.trim().length() <= 16;
+    }
+
+    private int fullTextTokenPriority(String token) {
+        String normalized = token == null ? "" : token.trim();
+        if (normalized.matches(".*20\\d{2}.*")) {
+            return 90;
+        }
+        if (normalized.endsWith("指南") || normalized.endsWith("规范") || normalized.endsWith("共识")) {
+            return 80;
+        }
+        if (normalized.matches("原发性早期.+癌")) {
+            return 60;
+        }
+        if (normalized.endsWith("癌") || normalized.endsWith("病") || normalized.endsWith("症") || normalized.endsWith("感染")) {
+            return 70;
+        }
+        if (normalized.length() >= 3) {
+            return 40;
+        }
+        return 10;
+    }
+
     private long millisSince(long startedAt) {
         return (System.nanoTime() - startedAt) / 1_000_000;
     }
@@ -606,7 +665,7 @@ public class HybridKnowledgeRetrieverService {
         if (totalDurationMs < 800) {
             return;
         }
-        log.info("knowledge.search.slow profile={} queryType={} keywordHits={} vectorHits={} vectorSkipped={} keywordMs={} vectorMs={} mergeMs={} totalMs={} query={}",
+        log.info("knowledge.search.slow(知识库慢查询) profile={} queryType={} keywordHits={} vectorHits={} vectorSkipped={} keywordMs={} vectorMs={} mergeMs={} totalMs={} query={}",
                 profile.name(),
                 queryType,
                 keywordHitCount,

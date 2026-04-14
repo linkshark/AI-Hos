@@ -13,6 +13,9 @@ public class ChatSessionOwner {
     private Long memoryId;
     private Long userId;
     private String customTitle;
+    private String firstQuestion;
+    private String lastPreview;
+    private Integer messageCount;
     private Boolean pinned;
     private LocalDateTime pinnedAt;
     private Boolean hidden;
@@ -42,6 +45,30 @@ public class ChatSessionOwner {
 
     public void setCustomTitle(String customTitle) {
         this.customTitle = customTitle;
+    }
+
+    public String getFirstQuestion() {
+        return firstQuestion;
+    }
+
+    public void setFirstQuestion(String firstQuestion) {
+        this.firstQuestion = firstQuestion;
+    }
+
+    public String getLastPreview() {
+        return lastPreview;
+    }
+
+    public void setLastPreview(String lastPreview) {
+        this.lastPreview = lastPreview;
+    }
+
+    public Integer getMessageCount() {
+        return messageCount;
+    }
+
+    public void setMessageCount(Integer messageCount) {
+        this.messageCount = messageCount;
     }
 
     public Boolean getPinned() {

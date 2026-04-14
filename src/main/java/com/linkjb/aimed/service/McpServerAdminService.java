@@ -135,6 +135,146 @@ public class McpServerAdminService {
         }
     }
 
+    public String describeEnabledToolsForAgent() {
+        List<McpServerItem> servers = listServers().stream()
+                .filter(McpServerItem::enabled)
+                .filter(item -> TRANSPORT_STREAMABLE_HTTP.equals(item.transportType()))
+                .toList();
+        if (servers.isEmpty()) {
+            return "当前没有启用的 MCP 服务。";
+        }
+        List<String> lines = new ArrayList<>();
+        for (McpServerItem server : servers) {
+            try {
+                List<McpServerToolItem> tools = fetchTools(server);
+                if (tools.isEmpty()) {
+                    lines.add("server=" + server.name() + " tools=EMPTY");
+                    continue;
+                }
+                for (McpServerToolItem tool : tools) {
+                    lines.add("server=" + server.name()
+                            + " tool=" + tool.name()
+                            + " description=" + nullToEmpty(tool.description())
+                            + " inputSchema=" + nullToEmpty(tool.inputSchema()));
+                }
+            } catch (Exception exception) {
+                lines.add("server=" + server.name() + " status=FAILED message=" + resolveErrorMessage(exception));
+            }
+        }
+        return String.join("\n", lines);
+    }
+
+    public String callEnabledToolForAgent(String toolName, String argumentsJson) {
+        if (!StringUtils.hasText(toolName)) {
+            return "status=MISSING_TOOL\nmessage=请提供 MCP 工具名称";
+        }
+        Map<String, Object> arguments = parseToolArguments(argumentsJson);
+        String requestedTool = normalizeRequestedToolName(toolName);
+        String requestedServer = null;
+        int separatorIndex = requestedTool.indexOf('.');
+        if (separatorIndex > 0 && separatorIndex < requestedTool.length() - 1) {
+            requestedServer = requestedTool.substring(0, separatorIndex).trim();
+            requestedTool = requestedTool.substring(separatorIndex + 1).trim();
+        }
+        String effectiveServer = requestedServer;
+        String effectiveRequestedTool = requestedTool;
+        List<McpServerItem> servers = listServers().stream()
+                .filter(McpServerItem::enabled)
+                .filter(item -> TRANSPORT_STREAMABLE_HTTP.equals(item.transportType()))
+                .filter(item -> !StringUtils.hasText(effectiveServer) || effectiveServer.equalsIgnoreCase(item.name()))
+                .toList();
+        for (McpServerItem server : servers) {
+            try {
+                List<McpServerToolItem> tools = fetchTools(server);
+                McpServerToolItem matchedTool = resolveRequestedTool(effectiveRequestedTool, tools);
+                if (matchedTool == null) {
+                    continue;
+                }
+                JsonNode result = callTool(server, matchedTool.name(), arguments);
+                recordAgentMcpToolCall(server, matchedTool.name(), "SUCCESS", null);
+                return formatToolCallResult(server, matchedTool.name(), result);
+            } catch (Exception exception) {
+                recordAgentMcpToolCall(server, effectiveRequestedTool, "ERROR", resolveErrorMessage(exception));
+                return "status=ERROR\nserver=" + server.name() + "\ntool=" + effectiveRequestedTool + "\nmessage=" + resolveErrorMessage(exception);
+            }
+        }
+        return "status=NOT_FOUND\ntool=" + effectiveRequestedTool
+                + "\nmessage=没有找到已启用且匹配的 MCP 工具"
+                + "\navailableTools=\n" + describeEnabledToolsForAgent();
+    }
+
+    private void recordAgentMcpToolCall(McpServerItem server, String toolName, String status, String error) {
+        if (auditLogService == null || server == null) {
+            return;
+        }
+        String summary = "Agent 调用 MCP 工具 " + server.name() + "." + toolName + " 状态 " + status;
+        if (StringUtils.hasText(error)) {
+            summary += "：" + error;
+        }
+        auditLogService.recordMcpAction(null, "AGENT", AuditLogService.ACTION_MCP_TOOL_CALL,
+                String.valueOf(server.id()), summary);
+    }
+
+    String normalizeRequestedToolName(String toolName) {
+        String normalized = toolName == null ? "" : toolName.trim();
+        int toolMarkerIndex = normalized.indexOf("tool=");
+        if (toolMarkerIndex >= 0) {
+            String suffix = normalized.substring(toolMarkerIndex + "tool=".length()).trim();
+            int endIndex = suffix.indexOf(' ');
+            normalized = endIndex > 0 ? suffix.substring(0, endIndex) : suffix;
+        }
+        normalized = normalized.replace('。', '.').replace('．', '.');
+        if (normalized.startsWith("\"") && normalized.endsWith("\"") && normalized.length() > 1) {
+            normalized = normalized.substring(1, normalized.length() - 1);
+        }
+        return normalized.trim();
+    }
+
+    McpServerToolItem resolveRequestedTool(String requestedTool, List<McpServerToolItem> tools) {
+        if (tools == null || tools.isEmpty()) {
+            return null;
+        }
+        String normalizedRequested = normalizeToolComparable(requestedTool);
+        for (McpServerToolItem tool : tools) {
+            if (tool == null || !StringUtils.hasText(tool.name())) {
+                continue;
+            }
+            if (requestedTool.equals(tool.name()) || requestedTool.equalsIgnoreCase(tool.name())) {
+                return tool;
+            }
+            String normalizedToolName = normalizeToolComparable(tool.name());
+            if (StringUtils.hasText(normalizedRequested)
+                    && (normalizedRequested.equals(normalizedToolName)
+                    || normalizedRequested.contains(normalizedToolName)
+                    || normalizedToolName.contains(normalizedRequested))) {
+                return tool;
+            }
+        }
+        if (looksLikeWeatherToolRequest(requestedTool)) {
+            for (McpServerToolItem tool : tools) {
+                String combined = normalizeToolComparable(tool.name() + " " + nullToEmpty(tool.description()));
+                if (combined.contains("weather") || combined.contains("天气")) {
+                    return tool;
+                }
+            }
+        }
+        return tools.size() == 1 ? tools.get(0) : null;
+    }
+
+    private String normalizeToolComparable(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        return value.trim()
+                .toLowerCase()
+                .replaceAll("[\\s_\\-./:：\"'`，,。()（）\\[\\]【】]+", "");
+    }
+
+    private boolean looksLikeWeatherToolRequest(String requestedTool) {
+        String normalized = normalizeToolComparable(requestedTool);
+        return normalized.contains("weather") || normalized.contains("天气") || normalized.contains("temperature");
+    }
+
     private McpServerTestResponse doTest(McpServerItem item, LocalDateTime checkedAt) throws Exception {
         if (!TRANSPORT_STREAMABLE_HTTP.equals(item.transportType())) {
             throw new IllegalArgumentException("当前仅支持 Streamable HTTP 类型的 MCP 服务");
@@ -168,6 +308,83 @@ public class McpServerAdminService {
         return new McpServerTestResponse(true, item.transportType(), serverName, serverVersion, tools.size(), tools, message, checkedAt);
     }
 
+    private List<McpServerToolItem> fetchTools(McpServerItem item) throws Exception {
+        HttpClient client = buildClient(item);
+        URI uri = URI.create(item.baseUrl());
+        initializeMcpSession(client, uri, item);
+        JsonNode toolsListResult = sendJsonRpcRequest(client, uri, item.headers(), item.connectTimeoutMs(), "tools/list", Map.of());
+        return extractTools(toolsListResult);
+    }
+
+    private JsonNode callTool(McpServerItem item, String toolName, Map<String, Object> arguments) throws Exception {
+        HttpClient client = buildClient(item);
+        URI uri = URI.create(item.baseUrl());
+        initializeMcpSession(client, uri, item);
+        return sendJsonRpcRequest(client, uri, item.headers(), item.connectTimeoutMs(),
+                "tools/call",
+                Map.of(
+                        "name", toolName,
+                        "arguments", arguments == null ? Map.of() : arguments
+                ));
+    }
+
+    private HttpClient buildClient(McpServerItem item) {
+        return HttpClient.newBuilder()
+                .connectTimeout(Duration.ofMillis(item.connectTimeoutMs()))
+                .build();
+    }
+
+    private void initializeMcpSession(HttpClient client, URI uri, McpServerItem item) throws Exception {
+        sendJsonRpcRequest(client, uri, item.headers(), item.connectTimeoutMs(),
+                "initialize",
+                Map.of(
+                        "protocolVersion", "2025-03-26",
+                        "capabilities", Map.of(),
+                        "clientInfo", Map.of("name", "aihos-agent-runtime", "version", "1.0.0")
+                ));
+        sendJsonRpcNotification(client, uri, item.headers(), item.connectTimeoutMs(),
+                "notifications/initialized", Map.of());
+    }
+
+    private Map<String, Object> parseToolArguments(String argumentsJson) {
+        if (!StringUtils.hasText(argumentsJson)) {
+            return Map.of();
+        }
+        try {
+            JsonNode node = objectMapper.readTree(argumentsJson);
+            if (node == null || node.isNull()) {
+                return Map.of();
+            }
+            if (!node.isObject()) {
+                throw new IllegalArgumentException("MCP 工具参数必须是 JSON object");
+            }
+            return objectMapper.convertValue(node, new TypeReference<Map<String, Object>>() {
+            });
+        } catch (Exception exception) {
+            throw new IllegalArgumentException("MCP 工具参数不是合法 JSON：" + exception.getMessage(), exception);
+        }
+    }
+
+    private String formatToolCallResult(McpServerItem server, String toolName, JsonNode result) {
+        if (result == null) {
+            return "status=SUCCESS\nserver=" + server.name() + "\ntool=" + toolName + "\nmessage=工具调用成功但无返回内容";
+        }
+        JsonNode content = result.get("content");
+        if (content != null && content.isArray()) {
+            List<String> texts = new ArrayList<>();
+            for (JsonNode item : content) {
+                String text = textValue(item, "text");
+                if (StringUtils.hasText(text)) {
+                    texts.add(text);
+                }
+            }
+            if (!texts.isEmpty()) {
+                return String.join("\n", texts);
+            }
+        }
+        return result.toString();
+    }
+
     private JsonNode sendJsonRpcRequest(HttpClient client,
                                         URI uri,
                                         List<McpServerHeaderItem> headers,
@@ -186,7 +403,7 @@ public class McpServerAdminService {
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "MCP 服务返回 HTTP " + response.statusCode());
         }
-        JsonNode root = objectMapper.readTree(response.body());
+        JsonNode root = parseJsonRpcResponse(response.body());
         if (root.hasNonNull("error")) {
             JsonNode errorNode = root.get("error");
             throw new IllegalStateException(textValue(errorNode, "message"));
@@ -240,6 +457,27 @@ public class McpServerAdminService {
             ));
         }
         return tools;
+    }
+
+    private JsonNode parseJsonRpcResponse(String body) throws Exception {
+        if (!StringUtils.hasText(body)) {
+            throw new IllegalStateException("MCP 服务返回空响应");
+        }
+        String trimmed = body.trim();
+        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+            return objectMapper.readTree(trimmed);
+        }
+        for (String line : trimmed.split("\\R")) {
+            String normalized = line.trim();
+            if (!normalized.startsWith("data:")) {
+                continue;
+            }
+            String data = normalized.substring("data:".length()).trim();
+            if (StringUtils.hasText(data) && !"[DONE]".equalsIgnoreCase(data)) {
+                return objectMapper.readTree(data);
+            }
+        }
+        throw new IllegalStateException("MCP 服务返回内容不是 JSON-RPC 响应");
     }
 
     private void persistTestStatus(Long id,
@@ -361,6 +599,10 @@ public class McpServerAdminService {
             return value;
         }
         return value.substring(0, maxLength);
+    }
+
+    private String nullToEmpty(String value) {
+        return value == null ? "" : value;
     }
 
     private record ValidatedRequest(

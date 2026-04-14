@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class KnowledgeSearchLexiconTest {
@@ -22,6 +23,20 @@ class KnowledgeSearchLexiconTest {
         assertTrue(tokens.contains("专家"));
         assertTrue(tokens.contains("挂号"));
         assertTrue(tokens.contains("预约"));
+    }
+
+    @Test
+    void shouldExtractCoreCancerTermsWithoutQuestionNoise() {
+        List<String> tokens = KnowledgeSearchLexicon.expandQueryTokens("原发性早期肝癌应该如何治疗");
+
+        assertTrue(tokens.contains("原发性肝癌"));
+        assertTrue(tokens.contains("早期肝癌"));
+        assertTrue(tokens.contains("肝癌"));
+        assertFalse(tokens.contains("发性"));
+        assertFalse(tokens.contains("性早"));
+        assertFalse(tokens.contains("期肝"));
+        assertFalse(tokens.contains("应该"));
+        assertFalse(tokens.contains("如何"));
     }
 
     @Test

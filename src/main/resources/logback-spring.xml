@@ -55,6 +55,11 @@
     <logger name="com.linkjb.aimed" level="INFO"/>
     <logger name="org.springframework.security" level="INFO"/>
     <logger name="org.springframework.web" level="INFO"/>
+    <!--
+      部分官方 PDF 的内嵌 CJK 字体表不完整，PDFBox 会降级使用 fallback 字体并继续解析正文。
+      这类 WARN 不影响知识入库，但会在启动批量解析时刷屏；保留 ERROR 级别便于发现真正解析异常。
+    -->
+    <logger name="org.apache.pdfbox.pdmodel.font.PDCIDFontType2" level="ERROR"/>
 
     <!--
       默认输出仍然优先给人看，便于本地开发和终端排障。

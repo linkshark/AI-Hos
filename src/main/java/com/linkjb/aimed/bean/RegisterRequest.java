@@ -15,6 +15,8 @@ public record RegisterRequest(
         String password,
         @NotBlank(message = "确认密码不能为空")
         String confirmPassword,
-        String nickname
+        String nickname,
+        Boolean adminRequested,
+        String adminInviteToken
 ) {
 }

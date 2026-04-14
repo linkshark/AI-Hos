@@ -10,6 +10,7 @@ import com.linkjb.aimed.bean.chat.ChatVisibleHistoryDocument;
 import com.linkjb.aimed.entity.ChatSessionOwner;
 import com.linkjb.aimed.store.MongoChatMemoryStore;
 import com.linkjb.aimed.store.MongoVisibleChatHistoryStore;
+import com.linkjb.aimed.store.MongoVisibleChatHistoryStore.VisibleHistorySummary;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
@@ -31,12 +32,12 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Base64;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class ChatHistoryService {
@@ -49,6 +50,7 @@ public class ChatHistoryService {
     private final MongoChatMemoryStore mongoChatMemoryStore;
     private final MongoVisibleChatHistoryStore mongoVisibleChatHistoryStore;
     private final ChatSessionUserBindingService chatSessionUserBindingService;
+    private final Set<Long> reconciledHistorySummaryUsers = ConcurrentHashMap.newKeySet();
 
     public ChatHistoryService(ChatSessionOwnerService chatSessionOwnerService,
                               MongoChatMemoryStore mongoChatMemoryStore,
@@ -83,7 +85,7 @@ public class ChatHistoryService {
         ));
         refreshVisibleHistorySummary(history);
         mongoVisibleChatHistoryStore.save(history);
-        touchOwner(memoryId);
+        syncOwnerSummary(history);
     }
 
     public void recordAssistantMessage(Long memoryId, String content, List<KnowledgeCitationItem> citations) {
@@ -105,57 +107,16 @@ public class ChatHistoryService {
             return;
         }
         mongoVisibleChatHistoryStore.save(history);
-        touchOwner(memoryId);
+        syncOwnerSummary(history);
     }
 
     public PagedResponse<ChatHistoryItemResponse> listHistory(Long userId,
                                                               int page,
                                                               int size,
                                                               String keyword) {
-        List<ChatSessionOwner> owners = chatSessionOwnerService.listVisibleByUserId(userId);
-        List<ChatHistoryItemResponse> items = new ArrayList<>();
-        for (ChatSessionOwner owner : owners) {
-            ChatVisibleHistoryDocument history = loadVisibleHistory(owner.getUserId(), owner.getMemoryId(), false);
-            if (history == null || history.getMessages().isEmpty() || !hasMeaningfulVisibleContent(history)) {
-                continue;
-            }
-            if (!StringUtils.hasText(history.getFirstQuestion())) {
-                continue;
-            }
-            String defaultTitle = StringUtils.hasText(history.getFirstQuestion())
-                    ? abbreviate(singleLine(history.getFirstQuestion()), 22)
-                    : summarizeTitle(history.getMessages());
-            if (!StringUtils.hasText(defaultTitle) || "未命名对话".equals(defaultTitle)) {
-                continue;
-            }
-            String displayTitle = StringUtils.hasText(owner.getCustomTitle()) ? owner.getCustomTitle().trim() : defaultTitle;
-            if (!matchesKeyword(keyword, displayTitle, owner.getCustomTitle(), history.getFirstQuestion())) {
-                continue;
-            }
-            String preview = StringUtils.hasText(history.getLastPreview())
-                    ? history.getLastPreview()
-                    : summarizePreview(history.getMessages());
-            items.add(new ChatHistoryItemResponse(
-                    owner.getMemoryId(),
-                    displayTitle,
-                    owner.getCustomTitle(),
-                    history.getFirstQuestion(),
-                    preview,
-                    formatDateTime(owner.getUpdatedAt() != null ? owner.getUpdatedAt() : owner.getCreatedAt()),
-                    toEpochMillis(owner.getUpdatedAt() != null ? owner.getUpdatedAt() : owner.getCreatedAt()),
-                    history.getMessages().size(),
-                    Boolean.TRUE.equals(owner.getPinned())
-            ));
-        }
-        items.sort(Comparator
-                .comparing(ChatHistoryItemResponse::pinned, Comparator.reverseOrder())
-                .thenComparing(ChatHistoryItemResponse::updatedAtEpochMillis, Comparator.nullsLast(Comparator.reverseOrder())));
-
-        int safeSize = Math.max(1, size);
-        int safePage = Math.max(1, page);
-        int fromIndex = Math.min((safePage - 1) * safeSize, items.size());
-        int toIndex = Math.min(fromIndex + safeSize, items.size());
-        return new PagedResponse<>(items.size(), safePage, safeSize, items.subList(fromIndex, toIndex));
+        reconcileVisibleHistorySummaries(userId);
+        backfillMissingHistorySummaries(userId);
+        return chatSessionOwnerService.listVisibleSummaryPage(userId, page, size, keyword);
     }
 
     public ChatHistoryDetailResponse detail(Long userId, Long memoryId, boolean includeInternalContent) {
@@ -187,7 +148,6 @@ public class ChatHistoryService {
         String normalizedTitle = title == null ? null : title.trim();
         chatSessionOwnerService.rename(memoryId, normalizedTitle);
         owner.setCustomTitle(normalizedTitle);
-        owner.setUpdatedAt(LocalDateTime.now());
         return listItem(owner);
     }
 
@@ -197,7 +157,6 @@ public class ChatHistoryService {
         chatSessionOwnerService.updatePinned(memoryId, pinned);
         owner.setPinned(pinned);
         owner.setPinnedAt(pinned ? now : null);
-        owner.setUpdatedAt(now);
         return listItem(owner);
     }
 
@@ -215,6 +174,7 @@ public class ChatHistoryService {
         ChatVisibleHistoryDocument migrated = migrateLegacyHistory(userId, memoryId, includeInternalContent);
         if (migrated != null && !migrated.getMessages().isEmpty()) {
             mongoVisibleChatHistoryStore.save(migrated);
+            syncOwnerSummary(migrated);
             return migrated;
         }
         return history;
@@ -377,8 +337,80 @@ public class ChatHistoryService {
         return content;
     }
 
-    private void touchOwner(Long memoryId) {
-        chatSessionOwnerService.touch(memoryId);
+    private void syncOwnerSummary(ChatVisibleHistoryDocument history) {
+        if (history == null || history.getMemoryId() == null) {
+            return;
+        }
+        chatSessionOwnerService.updateSummary(
+                history.getMemoryId(),
+                history.getFirstQuestion(),
+                history.getLastPreview(),
+                history.getMessages() == null ? 0 : history.getMessages().size(),
+                LocalDateTime.now()
+        );
+    }
+
+    private void backfillMissingHistorySummaries(Long userId) {
+        for (ChatSessionOwner owner : chatSessionOwnerService.listVisibleMissingSummaryByUserId(userId, 200)) {
+            VisibleHistorySummary summary = mongoVisibleChatHistoryStore.getSummary(owner.getMemoryId());
+            if (summary == null || !StringUtils.hasText(summary.firstQuestion())) {
+                continue;
+            }
+            chatSessionOwnerService.updateSummary(
+                    owner.getMemoryId(),
+                    summary.firstQuestion(),
+                    summary.lastPreview(),
+                    owner.getMessageCount() == null ? 0 : owner.getMessageCount(),
+                    visibleHistoryUpdatedAt(summary, owner.getUpdatedAt())
+            );
+        }
+    }
+
+    private void reconcileVisibleHistorySummaries(Long userId) {
+        if (userId == null || !reconciledHistorySummaryUsers.add(userId)) {
+            return;
+        }
+        for (ChatSessionOwner owner : chatSessionOwnerService.listVisibleByUserId(userId)) {
+            VisibleHistorySummary summary = mongoVisibleChatHistoryStore.getSummary(owner.getMemoryId());
+            if (summary == null || !StringUtils.hasText(summary.firstQuestion())) {
+                continue;
+            }
+            LocalDateTime visibleUpdatedAt = visibleHistoryUpdatedAt(summary, owner.getUpdatedAt());
+            if (!shouldRefreshOwnerSummary(owner, summary, visibleUpdatedAt)) {
+                continue;
+            }
+            chatSessionOwnerService.updateSummary(
+                    owner.getMemoryId(),
+                    summary.firstQuestion(),
+                    summary.lastPreview(),
+                    owner.getMessageCount() == null ? 0 : owner.getMessageCount(),
+                    visibleUpdatedAt
+            );
+        }
+    }
+
+    private boolean shouldRefreshOwnerSummary(ChatSessionOwner owner,
+                                              VisibleHistorySummary summary,
+                                              LocalDateTime visibleUpdatedAt) {
+        if (!Objects.equals(owner.getFirstQuestion(), summary.firstQuestion())
+                || !Objects.equals(owner.getLastPreview(), summary.lastPreview())) {
+            return true;
+        }
+        LocalDateTime currentUpdatedAt = owner.getUpdatedAt();
+        if (currentUpdatedAt == null || visibleUpdatedAt == null) {
+            return currentUpdatedAt != visibleUpdatedAt;
+        }
+        return Math.abs(java.time.Duration.between(currentUpdatedAt, visibleUpdatedAt).toMillis()) > 1_000;
+    }
+
+    private LocalDateTime visibleHistoryUpdatedAt(VisibleHistorySummary summary, LocalDateTime fallback) {
+        if (summary != null && summary.updatedAtEpochMillis() != null) {
+            return LocalDateTime.ofInstant(
+                    java.time.Instant.ofEpochMilli(summary.updatedAtEpochMillis()),
+                    ZoneId.systemDefault()
+            );
+        }
+        return fallback == null ? LocalDateTime.now() : fallback;
     }
 
     private boolean looksLikeInjectedKnowledge(String content) {
@@ -521,19 +553,6 @@ public class ChatHistoryService {
         return "未命名对话";
     }
 
-    private boolean matchesKeyword(String keyword, String displayTitle, String customTitle, String firstQuestion) {
-        if (!StringUtils.hasText(keyword)) {
-            return true;
-        }
-        String normalizedKeyword = keyword.trim().toLowerCase(Locale.ROOT);
-        // 历史标题支持“自定义标题为空”的旧数据，不能再用 List.of(...) 包 null，
-        // 否则一旦用户开始搜索，后端会直接 500，左侧历史就会表现成“搜索后全空白”。
-        return Arrays.asList(displayTitle, customTitle, firstQuestion).stream()
-                .filter(StringUtils::hasText)
-                .map(value -> value.trim().toLowerCase(Locale.ROOT))
-                .anyMatch(value -> value.contains(normalizedKeyword));
-    }
-
     private String summarizePreview(List<ChatHistoryMessageResponse> messages) {
         if (messages.isEmpty()) {
             return "";
@@ -571,26 +590,16 @@ public class ChatHistoryService {
     }
 
     private ChatHistoryItemResponse listItem(ChatSessionOwner owner) {
-        ChatVisibleHistoryDocument history = loadVisibleHistory(owner.getUserId(), owner.getMemoryId(), false);
-        if (history == null || !hasMeaningfulVisibleContent(history)) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "当前历史会话不存在或已删除");
+        if (!StringUtils.hasText(owner.getFirstQuestion())) {
+            ChatVisibleHistoryDocument history = loadVisibleHistory(owner.getUserId(), owner.getMemoryId(), false);
+            if (history == null || !hasMeaningfulVisibleContent(history)) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "当前历史会话不存在或已删除");
+            }
+            owner.setFirstQuestion(history.getFirstQuestion());
+            owner.setLastPreview(history.getLastPreview());
+            owner.setMessageCount(history.getMessages() == null ? 0 : history.getMessages().size());
         }
-        List<ChatHistoryMessageResponse> visibleMessages = history == null ? List.of() : history.getMessages();
-        String defaultTitle = StringUtils.hasText(history == null ? null : history.getFirstQuestion())
-                ? abbreviate(singleLine(history.getFirstQuestion()), 22)
-                : summarizeTitle(visibleMessages);
-        String displayTitle = StringUtils.hasText(owner.getCustomTitle()) ? owner.getCustomTitle().trim() : defaultTitle;
-        return new ChatHistoryItemResponse(
-                owner.getMemoryId(),
-                displayTitle,
-                owner.getCustomTitle(),
-                history == null ? null : history.getFirstQuestion(),
-                history == null ? summarizePreview(visibleMessages) : history.getLastPreview(),
-                formatDateTime(owner.getUpdatedAt() != null ? owner.getUpdatedAt() : owner.getCreatedAt()),
-                toEpochMillis(owner.getUpdatedAt() != null ? owner.getUpdatedAt() : owner.getCreatedAt()),
-                visibleMessages.size(),
-                Boolean.TRUE.equals(owner.getPinned())
-        );
+        return chatSessionOwnerService.toHistoryItem(owner);
     }
 
     /**

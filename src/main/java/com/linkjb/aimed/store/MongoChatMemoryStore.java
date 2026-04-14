@@ -46,7 +46,7 @@ public class MongoChatMemoryStore implements ChatMemoryStore {
         }
         Document chatMessages = collection.find(Filters.eq("memoryId", normalizedMemoryId)).first();
         if (chatMessages == null) {
-            log.debug("对话记忆获取 memoryId={} size=0", normalizedMemoryId);
+            log.debug("对话记忆创建 memoryId={} size=0", normalizedMemoryId);
             return new LinkedList<>();
         }
 

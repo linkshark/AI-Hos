@@ -201,7 +201,7 @@ public class ChatApplicationService {
                         // 如果本地模型最后没给出稳定正文，就退化成基于 citation 的简短总结，至少保证用户看到的是一句能读懂的话，
                         // 而不是“只有引用标签，没有回答正文”。
                         if (!StringUtils.hasText(finalText) && !StringUtils.hasText(streamedText.toString())) {
-                            finalText = fallbackAnswerFromCitations(retrievalSummary);
+                            finalText = fallbackAnswerFromCitations(retrievalSummary, summaryFallbackQuery);
                         }
                         if (shouldEmitFinalText(streamedText.toString(), finalText)) {
                             emitter.next(finalText);
@@ -299,8 +299,8 @@ public class ChatApplicationService {
             return STREAM_METADATA_MARKER + objectMapper.writeValueAsString(metadata);
         } catch (JsonProcessingException exception) {
             log.warn("chat.stream.metadata.encode.failed", exception);
-            return "";
         }
+        return "";
     }
 
     private int textLength(String text) {
@@ -453,22 +453,86 @@ public class ChatApplicationService {
         return !normalizedFinal.equals(normalizedStreamed) && !normalizedStreamed.endsWith(normalizedFinal);
     }
 
-    private String fallbackAnswerFromCitations(HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary) {
+    String fallbackAnswerFromCitations(HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary, String query) {
         if (retrievalSummary == null || retrievalSummary.finalHits().isEmpty()) {
-            return "当前模型没有产出稳定正文，但系统已完成检索。请稍后重试，或切换到千问在线。";
+            return """
+                    结论：
+                    当前本地模型没有产出稳定正文，系统也没有检索到足够明确的知识依据，暂时不能给出具体判断。
+
+                    建议：
+                    - 请补充年龄、症状持续时间、体温或主要不适表现，便于进一步判断。
+                    - 如果症状明显加重，建议及时到医院就诊，由医生结合查体和检查结果评估。
+
+                    何时尽快就医：
+                    出现高热不退、精神反应差、呼吸困难、持续呕吐腹泻、明显脱水、意识异常或抽搐时，应尽快就医。
+
+                    说明：
+                    本回答是本地模型兜底提示，不替代医生诊断或药师用药指导。
+                    """;
         }
-        // 这是最后一级兜底：宁可给一个基于命中片段的短总结，也不要让用户只看到引用而完全看不到回答。
-        List<String> snippets = retrievalSummary.finalHits().stream()
-                .map(HybridKnowledgeRetrieverService.RetrievedChunk::preview)
+        List<String> citationTitles = retrievalSummary.finalHits().stream()
+                .map(hit -> StringUtils.hasText(hit.title()) ? hit.title() : hit.documentName())
                 .filter(StringUtils::hasText)
                 .distinct()
-                .limit(2)
+                .limit(3)
                 .toList();
-        StringBuilder builder = new StringBuilder("根据已命中的知识资料，先给你一个简要总结：\n\n");
-        for (int i = 0; i < snippets.size(); i++) {
-            builder.append(i + 1).append(". ").append(snippets.get(i)).append('\n');
+        String normalizedQuery = query == null ? "" : query.trim();
+        boolean childSymptom = normalizedQuery.matches(".*(小孩|小孩子|儿童|宝宝|婴儿|幼儿).*")
+                && normalizedQuery.matches(".*(感冒|发烧|发热|鼻塞|咳嗽|咽痛|流涕|腹泻|呕吐).*");
+        boolean diarrhea = normalizedQuery.matches(".*(腹泻|拉肚子|呕吐|吐|肚子疼|腹痛).*");
+
+        StringBuilder builder = new StringBuilder();
+        if (childSymptom) {
+            builder.append("""
+                    结论：
+                    儿童出现感冒、发热、鼻塞、咳嗽或腹泻时，多数需要先观察精神状态、体温、呼吸和补液情况；不要自行叠加多种感冒药或随意使用抗菌药。
+
+                    建议：
+                    - 让孩子充分休息、少量多次饮水，饮食清淡，记录体温和症状变化。
+                    - 退热药、止咳药或其他药物应按年龄、体重和说明书使用；婴幼儿或有基础病儿童建议先咨询医生或药师。
+                    - 如果伴随咳嗽明显、喘息、持续高热、反复呕吐腹泻，建议到儿科或发热门诊评估。
+
+                    何时尽快就医：
+                    出现精神差、嗜睡或烦躁、呼吸急促或费力、抽搐、持续高热超过 3 天、尿量明显减少、皮疹、颈部僵硬、血便或明显脱水时，应尽快就医。
+
+                    """);
+        } else if (diarrhea) {
+            builder.append("""
+                    结论：
+                    急性呕吐、腹泻或腹痛时，优先关注脱水和病情进展；多数轻症可先补液观察，但不能忽视高危信号。
+
+                    建议：
+                    - 少量多次补液，注意尿量、精神状态、发热和大便性状。
+                    - 不建议自行使用抗菌药物；儿童、老人、孕产妇或有基础病者应降低就医阈值。
+                    - 若近期有集体发病或接触类似患者，应注意手卫生、隔离和环境消毒。
+
+                    何时尽快就医：
+                    出现明显脱水、持续高热、血便、剧烈或持续腹痛、频繁呕吐无法进水、尿量明显减少、精神反应差时，应尽快就医。
+
+                    """);
+        } else {
+            builder.append("""
+                    结论：
+                    本地模型没有产出稳定正文，系统已完成知识检索。根据当前检索结果，只能给出保守建议，不能直接替代医生诊断。
+
+                    建议：
+                    - 请补充年龄、症状持续时间、严重程度、既往病史和正在使用的药物。
+                    - 如果问题涉及用药、儿童、孕产妇、老人或慢性病，建议结合医生或药师意见处理。
+                    - 如症状持续或加重，建议到对应科室就诊评估。
+
+                    何时尽快就医：
+                    出现症状快速加重、意识异常、呼吸困难、胸痛、抽搐、明显脱水、持续高热或剧烈疼痛时，应尽快就医。
+
+                    """);
         }
-        builder.append("\n如需更完整分析，建议重试一次，或切换到千问在线继续提问。");
+        builder.append("说明：\n");
+        if (citationTitles.isEmpty()) {
+            builder.append("本回答是本地模型兜底提示，未直接摘录原文片段，不替代医生诊断或药师用药指导。");
+        } else {
+            builder.append("本回答参考了已命中的知识资料：")
+                    .append(String.join("、", citationTitles))
+                    .append("。本回答未直接摘录原文片段，不替代医生诊断或药师用药指导。");
+        }
         return builder.toString();
     }
 
@@ -554,4 +618,5 @@ public class ChatApplicationService {
             this.toolMode = toolMode;
         }
     }
+
 }

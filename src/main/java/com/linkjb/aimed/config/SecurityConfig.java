@@ -63,7 +63,9 @@ public class SecurityConfig {
                                 "/aimed/auth/register/send-code",
                                 "/aimed/auth/password/send-code",
                                 "/aimed/auth/password/reset",
-                                "/aimed/auth/refresh"
+                                "/aimed/auth/refresh",
+                                "/aimed/mcp/weather",
+                                "/api/aimed/mcp/weather"
                         ).permitAll()
                         .requestMatchers("/aimed/auth/me", "/aimed/auth/logout").authenticated()
                         .requestMatchers(HttpMethod.GET, "/aimed/dept/tree").authenticated()

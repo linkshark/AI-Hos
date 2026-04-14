@@ -12,6 +12,8 @@ public class AuthProperties {
     private Duration verificationExpires = Duration.ofMinutes(10);
     private boolean mailMockEnabled = true;
     private boolean adminBootstrapEnabled = true;
+    private boolean adminRegisterEnabled = false;
+    private String adminRegisterInviteToken ;
     private String adminUsername = "admin";
     private String adminEmail = "admin@shulan.local";
     private String adminPassword = "change-me-admin-password";
@@ -63,6 +65,22 @@ public class AuthProperties {
 
     public void setAdminBootstrapEnabled(boolean adminBootstrapEnabled) {
         this.adminBootstrapEnabled = adminBootstrapEnabled;
+    }
+
+    public boolean isAdminRegisterEnabled() {
+        return adminRegisterEnabled;
+    }
+
+    public void setAdminRegisterEnabled(boolean adminRegisterEnabled) {
+        this.adminRegisterEnabled = adminRegisterEnabled;
+    }
+
+    public String getAdminRegisterInviteToken() {
+        return adminRegisterInviteToken;
+    }
+
+    public void setAdminRegisterInviteToken(String adminRegisterInviteToken) {
+        this.adminRegisterInviteToken = adminRegisterInviteToken;
     }
 
     public String getAdminUsername() {

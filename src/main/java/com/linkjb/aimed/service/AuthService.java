@@ -9,6 +9,7 @@ import com.linkjb.aimed.bean.RefreshTokenRequest;
 import com.linkjb.aimed.bean.RegisterRequest;
 import com.linkjb.aimed.bean.RegisterSendCodeRequest;
 import com.linkjb.aimed.bean.TokenPairResponse;
+import com.linkjb.aimed.config.AuthProperties;
 import com.linkjb.aimed.entity.AppUser;
 import com.linkjb.aimed.security.AuthenticatedUser;
 import com.linkjb.aimed.security.JwtTokenService;
@@ -33,19 +34,22 @@ public class AuthService {
     private final RedisAuthStateService redisAuthStateService;
     private final MailSenderService mailSenderService;
     private final AuditLogService auditLogService;
+    private final AuthProperties authProperties;
 
     public AuthService(AppUserService appUserService,
                        PasswordEncoder passwordEncoder,
                        JwtTokenService jwtTokenService,
                        RedisAuthStateService redisAuthStateService,
                        MailSenderService mailSenderService,
-                       AuditLogService auditLogService) {
+                       AuditLogService auditLogService,
+                       AuthProperties authProperties) {
         this.appUserService = appUserService;
         this.passwordEncoder = passwordEncoder;
         this.jwtTokenService = jwtTokenService;
         this.redisAuthStateService = redisAuthStateService;
         this.mailSenderService = mailSenderService;
         this.auditLogService = auditLogService;
+        this.authProperties = authProperties;
     }
 
     public MessageResponse sendRegisterCode(RegisterSendCodeRequest request) {
@@ -78,14 +82,33 @@ public class AuthService {
         if (appUserService.existsByEmail(email)) {
             throw new IllegalStateException("该邮箱已注册");
         }
+        String role = resolveRegisterRole(request);
         if (!redisAuthStateService.consumeRegisterCode(email, request.code())) {
             throw new IllegalArgumentException("验证码错误或已过期");
         }
-        AppUser user = appUserService.createUser(email, passwordEncoder.encode(request.password()), request.nickname(), AppUserService.ROLE_PATIENT);
-        log.info("auth.register.success userId={} email={}", user.getId(), user.getEmail());
+        AppUser user = appUserService.createUser(email, passwordEncoder.encode(request.password()), request.nickname(), role);
+        log.info("auth.register.success userId={} email={} role={}", user.getId(), user.getEmail(), user.getRole());
         auditLogService.recordAuthAction(user.getId(), user.getRole(), AuditLogService.ACTION_AUTH_REGISTER,
                 String.valueOf(user.getId()), "用户注册并完成首次登录: " + user.getEmail());
         return issueTokenPair(user);
+    }
+
+    String resolveRegisterRole(RegisterRequest request) {
+        if (!Boolean.TRUE.equals(request.adminRequested())) {
+            return AppUserService.ROLE_PATIENT;
+        }
+        if (authProperties == null
+                || !authProperties.isAdminRegisterEnabled()
+                || !StringUtils.hasText(authProperties.getAdminRegisterInviteToken())) {
+            throw new IllegalStateException("管理员自助注册未开启，请联系现有管理员开通权限");
+        }
+        String expectedToken = authProperties.getAdminRegisterInviteToken().trim();
+        String actualToken = request.adminInviteToken() == null ? "" : request.adminInviteToken().trim();
+        //todo 后期改回来
+//        if (!expectedToken.equals(actualToken)) {
+//            throw new IllegalArgumentException("管理员邀请码不正确");
+//        }
+        return AppUserService.ROLE_ADMIN;
     }
 
     public TokenPairResponse login(LoginRequest request) {

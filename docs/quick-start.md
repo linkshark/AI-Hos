@@ -4,7 +4,7 @@
 
 ### 1.1 克隆仓库及子模块
 
-项目包含前端子模块AiMed-UI，需加`--recursive`参数一并克隆：
+项目包含前端子模块 `aimed-ui`，需加`--recursive`参数一并克隆：
 ```shell
 git clone <https://github.com/linkshark/AI-Hos> --recursive
 ```
@@ -23,7 +23,7 @@ git clone <https://github.com/linkshark/AI-Hos> --recursive
 
 #### 1.3.1 通过knife4j发送请求
 
-打开[knife4j页面](http://localhost:8080/doc.html#/-v3-api-docs/AiMed/chat)，点击左侧AiMed - POST 会话，可在页面中看到消息结构体：
+打开[knife4j页面](http://localhost:8080/doc.html#/-v3-api-docs/AiMed/chat)，点击左侧会话接口，可在页面中看到消息结构体：
 ```json
 {
   "memoryId": 1,

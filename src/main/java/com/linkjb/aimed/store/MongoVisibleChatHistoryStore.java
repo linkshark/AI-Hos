@@ -6,6 +6,7 @@ import com.mongodb.ConnectionString;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.Filters;
+import com.mongodb.client.model.Projections;
 import com.mongodb.client.model.UpdateOptions;
 import com.mongodb.client.model.Updates;
 import com.linkjb.aimed.bean.chat.ChatVisibleHistoryDocument;
@@ -52,6 +53,29 @@ public class MongoVisibleChatHistoryStore {
         }
     }
 
+    public VisibleHistorySummary getSummary(Long memoryId) {
+        if (memoryId == null) {
+            return null;
+        }
+        Document document = collection.find(Filters.eq("memoryId", memoryId))
+                .projection(Projections.fields(
+                        Projections.include("memoryId", "userId", "firstQuestion", "lastPreview", "updatedAt", "updatedAtEpochMillis"),
+                        Projections.excludeId()
+                ))
+                .first();
+        if (document == null) {
+            return null;
+        }
+        return new VisibleHistorySummary(
+                document.getLong("memoryId"),
+                document.getLong("userId"),
+                document.getString("firstQuestion"),
+                document.getString("lastPreview"),
+                document.getString("updatedAt"),
+                document.getLong("updatedAtEpochMillis")
+        );
+    }
+
     public void save(ChatVisibleHistoryDocument history) {
         if (history == null || history.getMemoryId() == null) {
             return;
@@ -74,5 +98,13 @@ public class MongoVisibleChatHistoryStore {
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("保存用户可见历史失败", exception);
         }
+    }
+
+    public record VisibleHistorySummary(Long memoryId,
+                                        Long userId,
+                                        String firstQuestion,
+                                        String lastPreview,
+                                        String updatedAt,
+                                        Long updatedAtEpochMillis) {
     }
 }

@@ -1,10 +1,10 @@
-# AiMed 本地运行说明
+# AiHos 本地运行说明
 
 本文档对应当前仓库的本地开发环境，目标是把后端、Mongo、MySQL、本地 Ollama 与前端一起跑通，并保留千问在线作为可切换入口。
 
 ## 1. 环境前提
 
-- Java 17 优先；本机若继续使用 Java 25，先尝试直接运行，若有兼容问题再使用文末的 Docker/JDK17 兜底方案
+- Java 21 优先；本机若继续使用 Java 25，先尝试直接运行，若有兼容问题再切回 JDK 21
 - Maven 3.9+
 - Node.js 20+
 - Docker Desktop
@@ -227,7 +227,7 @@ mvn spring-boot:run
 如果你要部署到纯在线服务器，推荐这一组：
 
 ```bash
-export APP_PROVIDER_DEFAULT='QWEN_ONLINE'
+export APP_PROVIDER_DEFAULT='QWEN_ONLINE_FAST'
 export APP_PROVIDER_LOCAL_ENABLED='false'
 export APP_PROVIDER_ONLINE_ENABLED='true'
 export APP_EMBEDDING_LOCAL_ENABLED='false'

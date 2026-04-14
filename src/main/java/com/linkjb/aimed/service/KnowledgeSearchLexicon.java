@@ -14,6 +14,15 @@ final class KnowledgeSearchLexicon {
             "介绍一下", "介绍下", "说一下", "说说", "帮我总结", "总结一下", "解读一下",
             "在哪个科室方向", "在哪个方向", "是哪个方向", "是什么方向"
     );
+    private static final Set<String> QUERY_NOISE_TOKENS = Set.of(
+            "应该", "应当", "如何", "怎么", "怎么办", "怎样", "处理", "可以", "一下", "请问",
+            "帮我", "需要", "建议", "什么", "怎么样", "是否", "能否", "治疗"
+    );
+    private static final List<String> COMMON_MEDICAL_TERMS = List.of(
+            "肺炎支原体肺炎", "慢性阻塞性肺疾病", "慢性肾脏病", "高尿酸血症",
+            "肝癌", "肺癌", "胃癌", "肠癌", "乳腺癌", "糖尿病", "高血压",
+            "痛风", "肥胖症", "流感", "诺如病毒", "新型冠状病毒感染"
+    );
 
     private KnowledgeSearchLexicon() {
     }
@@ -90,13 +99,18 @@ final class KnowledgeSearchLexicon {
         }
         String normalized = normalizeSearchQuery(query);
         Set<String> tokens = new LinkedHashSet<>();
-        addKeyword(tokens, normalized);
-        addKeyword(tokens, normalized.replaceAll("[（()）《》“”\"'、，。？！：:;；\\-_/]", ""));
-        for (String part : normalized.split("\\s+")) {
-            addKeyword(tokens, part);
+        if (!containsQueryNoise(normalized)) {
+            addKeyword(tokens, normalized);
         }
-        for (String part : normalized.split("[（()）《》“”\"'、，。？！：:;；\\-_/\\s]+")) {
-            addKeyword(tokens, part);
+        extractCoreQueryTokens(normalized).forEach(token -> addKeyword(tokens, token));
+        String noiseRemoved = removeQueryNoise(normalized);
+        addKeyword(tokens, noiseRemoved);
+        addKeyword(tokens, noiseRemoved.replaceAll("[（()）《》“”\"'、，。？！：:;；\\-_/]", ""));
+        for (String part : noiseRemoved.split("\\s+")) {
+            addUsefulQueryToken(tokens, part);
+        }
+        for (String part : noiseRemoved.split("[（()）《》“”\"'、，。？！：:;；\\-_/\\s]+")) {
+            addUsefulQueryToken(tokens, part);
         }
         String doctorName = extractDoctorName(normalized);
         addKeyword(tokens, doctorName);
@@ -132,12 +146,12 @@ final class KnowledgeSearchLexicon {
         String version = extractVersion(normalized);
         addKeyword(tokens, version);
         if (containsAny(normalized, "指南", "共识", "规范")) {
-            addKeyword(tokens, normalized.replaceAll("[^\\p{IsHan}0-9]", ""));
+            addKeyword(tokens, noiseRemoved.replaceAll("[^\\p{IsHan}0-9]", ""));
         }
-        for (int i = 0; i < normalized.length() - 1; i++) {
-            addKeyword(tokens, normalized.substring(i, i + 2).trim());
-        }
-        return tokens.stream().filter(token -> token.length() >= 2).limit(16).toList();
+        return tokens.stream()
+                .filter(KnowledgeSearchLexicon::isUsefulQueryToken)
+                .limit(16)
+                .toList();
     }
 
     static String normalizeSearchQuery(String query) {
@@ -158,6 +172,48 @@ final class KnowledgeSearchLexicon {
         return normalized;
     }
 
+    static List<String> extractCoreQueryTokens(String query) {
+        if (!StringUtils.hasText(query)) {
+            return List.of();
+        }
+        String normalized = normalizeSearchQuery(query);
+        Set<String> tokens = new LinkedHashSet<>();
+        for (String term : COMMON_MEDICAL_TERMS) {
+            if (!normalized.contains(term)) {
+                continue;
+            }
+            addKeyword(tokens, term);
+            if (term.endsWith("癌") && normalized.contains("原发性")) {
+                addKeyword(tokens, "原发性" + term);
+            }
+            if (term.endsWith("癌") && normalized.contains("早期")) {
+                addKeyword(tokens, "早期" + term);
+            }
+            if (containsAny(normalized, "指南", "规范", "共识")) {
+                addKeyword(tokens, term + "指南");
+            }
+        }
+        return tokens.stream().filter(KnowledgeSearchLexicon::isUsefulQueryToken).toList();
+    }
+
+    private static String removeQueryNoise(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        String cleaned = value;
+        for (String noise : QUERY_NOISE_TOKENS) {
+            cleaned = cleaned.replace(noise, " ");
+        }
+        return cleaned.replaceAll("\\s+", " ").trim();
+    }
+
+    private static boolean containsQueryNoise(String value) {
+        if (!StringUtils.hasText(value)) {
+            return false;
+        }
+        return QUERY_NOISE_TOKENS.stream().anyMatch(value::contains);
+    }
+
     private static void addKeyword(Set<String> keywords, String value) {
         if (!StringUtils.hasText(value)) {
             return;
@@ -166,6 +222,20 @@ final class KnowledgeSearchLexicon {
         if (trimmed.length() >= 2) {
             keywords.add(trimmed);
         }
+    }
+
+    private static void addUsefulQueryToken(Set<String> keywords, String value) {
+        if (isUsefulQueryToken(value)) {
+            addKeyword(keywords, value);
+        }
+    }
+
+    private static boolean isUsefulQueryToken(String value) {
+        if (!StringUtils.hasText(value)) {
+            return false;
+        }
+        String trimmed = value.trim();
+        return trimmed.length() >= 2 && !QUERY_NOISE_TOKENS.contains(trimmed);
     }
 
     private static boolean containsAny(String text, String... terms) {

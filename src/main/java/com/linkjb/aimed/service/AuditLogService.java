@@ -53,6 +53,7 @@ public class AuditLogService {
     public static final String ACTION_MCP_SERVER_UPDATE = "MCP_SERVER_UPDATE";
     public static final String ACTION_MCP_SERVER_DELETE = "MCP_SERVER_DELETE";
     public static final String ACTION_MCP_SERVER_TEST = "MCP_SERVER_TEST";
+    public static final String ACTION_MCP_TOOL_CALL = "MCP_TOOL_CALL";
 
     private final AuditLogMapper auditLogMapper;
     private final AppUserService appUserService;

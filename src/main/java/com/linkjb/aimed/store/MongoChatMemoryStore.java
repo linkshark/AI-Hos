@@ -52,7 +52,7 @@ public class MongoChatMemoryStore implements ChatMemoryStore {
 
         String content = chatMessages.getString("content");
         if (!StringUtils.hasText(content)) {
-            log.debug("对话记忆获取 memoryId={} size=0", normalizedMemoryId);
+            log.debug("无对话记忆-创建 memoryId={} size=0", normalizedMemoryId);
             return new LinkedList<>();
         }
         List<ChatMessage> messages = ChatMessageDeserializer.messagesFromJson(content);

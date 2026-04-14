@@ -104,10 +104,9 @@ public class AuthService {
         }
         String expectedToken = authProperties.getAdminRegisterInviteToken().trim();
         String actualToken = request.adminInviteToken() == null ? "" : request.adminInviteToken().trim();
-        //todo 后期改回来
-//        if (!expectedToken.equals(actualToken)) {
-//            throw new IllegalArgumentException("管理员邀请码不正确");
-//        }
+        if (!expectedToken.equals(actualToken)) {
+            throw new IllegalArgumentException("管理员邀请码不正确");
+        }
         return AppUserService.ROLE_ADMIN;
     }
 

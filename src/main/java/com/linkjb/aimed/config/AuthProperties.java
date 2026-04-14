@@ -13,7 +13,7 @@ public class AuthProperties {
     private boolean mailMockEnabled = true;
     private boolean adminBootstrapEnabled = true;
     private boolean adminRegisterEnabled = false;
-    private String adminRegisterInviteToken ;
+    private String adminRegisterInviteToken;
     private String adminUsername = "admin";
     private String adminEmail = "admin@shulan.local";
     private String adminPassword = "change-me-admin-password";

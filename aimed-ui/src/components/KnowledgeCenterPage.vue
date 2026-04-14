@@ -5,17 +5,12 @@
         <div class="brand-lockup">
           <img :src="shulanLogo" alt="杭州树兰医院" class="brand-logo" />
           <div>
-            <p class="brand-eyebrow">Knowledge Center</p>
-            <h1>树兰知识库工作台</h1>
-            <p class="brand-subtitle">管理知识文件、查看原文与 RAG 切分结果。</p>
+            <h1>树兰知识库管理</h1>
           </div>
         </div>
-        <button class="back-button" type="button" @click="backToChat">
-          返回智能问答
-        </button>
       </div>
 
-      <div class="sidebar-card">
+      <div class="sidebar-card operations-card">
         <div class="sidebar-heading">
           <span>知识操作</span>
           <strong>{{ fileCountText }}</strong>
@@ -38,8 +33,8 @@
             刷新列表
           </button>
         </div>
-        <p class="sidebar-note">
-          支持 PDF、Word、Excel、PPT、Markdown、TXT、HTML、XML 等格式。文本类文件支持在线编辑。
+        <p class="sidebar-note sidebar-note-steps">
+          支持 PDF / Office / Markdown / TXT，上传后进入待发布。
         </p>
         <input
           ref="uploadInputRef"
@@ -51,11 +46,47 @@
         />
       </div>
 
-      <div class="sidebar-card">
+      <div class="sidebar-card filter-card">
         <div class="sidebar-heading">
           <span>快速筛选</span>
           <strong>{{ filteredFiles.length }}</strong>
         </div>
+        <div class="stage-filter-row">
+          <button
+            v-for="item in stageFilterOptions"
+            :key="item.value"
+            :class="['stage-filter-chip', { active: stageFilter === item.value }]"
+            type="button"
+            @click="stageFilter = item.value"
+          >
+            <span>{{ item.label }}</span>
+            <strong>{{ stageCounts[item.value] || 0 }}</strong>
+          </button>
+        </div>
+        <div class="batch-toolbar">
+          <button class="secondary-button batch-button" type="button" @click="toggleSelectAllVisible">
+            {{ filteredFiles.length && filteredFiles.every((file) => selectedBatchHashes.includes(file.hash)) ? '取消全选' : '全选可见' }}
+          </button>
+          <button
+            class="primary-button batch-button"
+            type="button"
+            :disabled="batchPublishableCount === 0 || hasBatchProcessingFiles"
+            @click="runBatchAction('publish')"
+          >
+            批量上线 {{ batchPublishableCount || '' }}
+          </button>
+          <button
+            class="secondary-button batch-button"
+            type="button"
+            :disabled="batchArchivableCount === 0 || hasBatchProcessingFiles"
+            @click="runBatchAction('archive')"
+          >
+            批量归档 {{ batchArchivableCount || '' }}
+          </button>
+        </div>
+        <p v-if="hasBatchProcessingFiles" class="sidebar-note sidebar-note-processing">
+          当前勾选文件里有“处理中/重建中”的项，等待完成后才能执行批量发布或归档。
+        </p>
         <input
           v-model.trim="searchKeyword"
           class="search-input"
@@ -71,23 +102,28 @@
             @click="selectFile(file.hash)"
           >
             <div class="knowledge-item-top">
+              <label class="knowledge-select-box" @click.stop>
+                <input
+                  type="checkbox"
+                  :checked="selectedBatchHashes.includes(file.hash)"
+                  @change="toggleBatchHash(file.hash, $event.target.checked)"
+                />
+              </label>
               <span class="knowledge-name">{{ file.originalFilename || file.fileName }}</span>
+            </div>
+            <div class="knowledge-meta knowledge-meta-compact">
+              <span :class="['processing-tag', `processing-tag-stage-${knowledgeStage(file.processingStatus)}`]">
+                {{ stageLabel(file.processingStatus) }}
+              </span>
               <span :class="['source-tag', `source-tag-${file.source}`]">
                 {{ sourceLabel(file.source) }}
               </span>
-            </div>
-            <div class="knowledge-meta">
               <span>{{ file.extension?.toUpperCase() || 'FILE' }}</span>
               <span>{{ formatSize(file.size) }}</span>
             </div>
-            <div class="knowledge-meta">
+            <div class="knowledge-subline">
               <span>{{ file.parser || '未知解析器' }}</span>
               <span>{{ file.editable ? '可编辑' : '只读' }}</span>
-            </div>
-            <div class="knowledge-meta">
-              <span :class="['processing-tag', `processing-tag-${(file.processingStatus || 'UNKNOWN').toLowerCase()}`]">
-                {{ statusLabel(file.processingStatus) }}
-              </span>
               <span>{{ file.statusMessage || '等待处理' }}</span>
             </div>
             <div v-if="file.processingStatus === 'PROCESSING'" class="progress-inline">
@@ -107,42 +143,73 @@
           </div>
         </div>
       </div>
+
     </aside>
 
     <main class="knowledge-main">
       <section class="summary-card">
-        <div>
-          <p class="summary-kicker">Knowledge Detail</p>
-          <h2>{{ selectedDetail?.originalFilename || '请选择一个知识文件' }}</h2>
+        <div class="summary-content">
+          <div>
+            <p class="summary-kicker">知识详情</p>
+            <h2>{{ selectedDetail?.originalFilename || '请选择一个知识文件' }}</h2>
+            <p v-if="selectedDetail" class="summary-caption">
+              {{ detailStageHint || '查看原文、元数据和 RAG 切分结果。' }}
+            </p>
+          </div>
+          <div class="summary-stats">
+            <div class="summary-stat">
+              <span>切分块数</span>
+              <strong>{{ selectedDetail?.chunks?.length || 0 }}</strong>
+            </div>
+            <div class="summary-stat">
+              <span>解析字符</span>
+              <strong>{{ selectedDetail?.extractedText?.length || 0 }}</strong>
+            </div>
+            <div class="summary-stat">
+              <span>状态</span>
+              <strong>{{ detailStatusText }}</strong>
+            </div>
+            <div v-if="selectedDetail?.processingStatus === 'PROCESSING'" class="summary-stat summary-stat-progress">
+              <span>处理进度</span>
+              <strong>{{ safeProgress(selectedDetail?.progressPercent) }}%</strong>
+            </div>
+          </div>
         </div>
-        <div class="summary-stats">
-          <div class="summary-stat">
-            <span>切分块数</span>
-            <strong>{{ selectedDetail?.chunks?.length || 0 }}</strong>
-          </div>
-          <div class="summary-stat">
-            <span>解析字符</span>
-            <strong>{{ selectedDetail?.extractedText?.length || 0 }}</strong>
-          </div>
-          <div class="summary-stat">
-            <span>状态</span>
-            <strong>{{ detailStatusText }}</strong>
-          </div>
-          <div v-if="selectedDetail?.processingStatus === 'PROCESSING'" class="summary-stat summary-stat-progress">
-            <span>处理进度</span>
-            <strong>{{ safeProgress(selectedDetail?.progressPercent) }}%</strong>
-          </div>
+        <div class="summary-actions">
+          <button class="summary-nav-button" type="button" @click="backToChat">
+            智能问答
+          </button>
+          <AdminEntryActionButton v-if="isAdmin" @click="openAdminConsole" />
+          <LogoutActionButton @click="handleLogout" />
         </div>
       </section>
 
       <section v-if="selectedDetail" class="detail-card">
+        <div v-if="isDetailProcessing" class="detail-lock-banner">
+          <strong>当前文件正在重建中</strong>
+          <p>{{ selectedDetail.statusMessage || '正在解析文档并重建 RAG 索引，完成前已锁定发布、归档、删除和编辑操作。' }}</p>
+        </div>
+        <div class="knowledge-stage-strip">
+          <div :class="['knowledge-stage-item', { active: currentKnowledgeStage === 'processing' }]">
+            <span>处理中</span>
+            <small>{{ currentKnowledgeStage === 'processing' ? detailStageHint : '上传、解析、切分、重建' }}</small>
+          </div>
+          <div :class="['knowledge-stage-item', { active: currentKnowledgeStage === 'ready' }]">
+            <span>待发布</span>
+            <small>{{ currentKnowledgeStage === 'ready' ? detailStageHint : '已完成索引，等待上线' }}</small>
+          </div>
+          <div :class="['knowledge-stage-item', { active: currentKnowledgeStage === 'online' }]">
+            <span>{{ selectedDetail.processingStatus === 'ARCHIVED' ? '已归档' : '已上线' }}</span>
+            <small>{{ currentKnowledgeStage === 'online' ? detailStageHint : '已上线或已下线归档' }}</small>
+          </div>
+        </div>
         <div class="detail-toolbar">
           <div class="detail-badges">
             <span class="detail-badge">哈希 {{ selectedDetail.hash }}</span>
             <span class="detail-badge">{{ sourceLabel(selectedDetail.source) }}</span>
             <span class="detail-badge">{{ selectedDetail.parser || '未知解析器' }}</span>
-            <span :class="['detail-badge', 'detail-badge-status', `processing-tag-${(selectedDetail.processingStatus || 'UNKNOWN').toLowerCase()}`]">
-              {{ statusLabel(selectedDetail.processingStatus) }}
+            <span :class="['detail-badge', 'detail-badge-status', `processing-tag-stage-${currentKnowledgeStage}`]">
+              {{ detailStatusText }}
             </span>
           </div>
           <div class="detail-actions">
@@ -151,14 +218,51 @@
               class="secondary-button slim-button"
               type="button"
               @click="startEdit"
+              :disabled="isDetailActionLocked"
             >
               编辑内容
+            </button>
+            <button
+              v-if="['READY', 'ARCHIVED'].includes(selectedDetail.processingStatus)"
+              class="primary-button slim-button"
+              type="button"
+              @click="publishFile"
+              :disabled="isDetailActionLocked"
+            >
+              {{ selectedDetail.processingStatus === 'ARCHIVED' ? '重新上线' : '发布上线' }}
+            </button>
+            <button
+              v-if="selectedDetail.processingStatus === 'PUBLISHED'"
+              class="secondary-button slim-button"
+              type="button"
+              @click="archiveFile"
+              :disabled="isDetailActionLocked"
+            >
+              归档下线
+            </button>
+            <button
+              v-if="['READY', 'FAILED', 'ARCHIVED', 'PUBLISHED'].includes(selectedDetail.processingStatus)"
+              class="secondary-button slim-button"
+              type="button"
+              @click="reprocessFile"
+              :disabled="isDetailActionLocked"
+            >
+              重新处理
+            </button>
+            <button
+              class="secondary-button slim-button"
+              type="button"
+              @click="saveMetadata"
+              :disabled="!canSaveMetadata || isDetailActionLocked"
+            >
+              {{ isSaving ? '保存中...' : isPollingProcessing ? '等待重建完成...' : '保存元数据' }}
             </button>
             <button
               v-if="isEditing"
               class="secondary-button slim-button"
               type="button"
               @click="cancelEdit"
+              :disabled="isDetailActionLocked"
             >
               取消
             </button>
@@ -167,40 +271,159 @@
               class="primary-button slim-button"
               type="button"
               @click="saveEdit"
-              :disabled="isSaving"
+              :disabled="isDetailActionLocked"
             >
-              {{ isSaving ? '保存中...' : '保存并重建 RAG' }}
+              {{ isSaving ? '保存中...' : isPollingProcessing ? '等待重建完成...' : '保存并重建 RAG' }}
             </button>
             <button
               v-if="selectedDetail.deletable"
               class="danger-button slim-button"
               type="button"
               @click="deleteFile"
-              :disabled="isDeleting"
+              :disabled="isDeleting || isDetailActionLocked"
             >
               {{ isDeleting ? '删除中...' : '删除文件' }}
             </button>
           </div>
         </div>
 
-        <div class="detail-grid">
-          <div class="meta-card">
-            <span>文件名</span>
-            <strong>{{ selectedDetail.originalFilename }}</strong>
+        <section class="content-card detail-section-card">
+          <button class="section-heading section-heading-toggle" type="button" @click="toggleDetailSection('overview')">
+            <div>
+              <span>文件概览</span>
+              <small>先看状态、规模和使用范围</small>
+            </div>
+            <strong>{{ detailSections.overview ? '收起' : '展开' }}</strong>
+          </button>
+          <div v-if="detailSections.overview" class="detail-section-body">
+            <div class="detail-grid">
+              <div class="meta-card">
+                <span>文档类型</span>
+                <strong>{{ docTypeLabel(selectedDetail.docType) }}</strong>
+              </div>
+              <div class="meta-card">
+                <span>适用对象</span>
+                <strong>{{ audienceLabel(selectedDetail.audience) }}</strong>
+              </div>
+              <div class="meta-card">
+                <span>科室归属</span>
+                <strong>{{ departmentLabel(selectedDetail.department) }}</strong>
+              </div>
+              <div class="meta-card">
+                <span>版本</span>
+                <strong>{{ selectedDetail.version || 'v1' }}</strong>
+              </div>
+              <div class="meta-card">
+                <span>文件名</span>
+                <strong>{{ selectedDetail.originalFilename }}</strong>
+              </div>
+              <div class="meta-card">
+                <span>格式</span>
+                <strong>{{ selectedDetail.extension?.toUpperCase() || 'FILE' }}</strong>
+              </div>
+              <div class="meta-card">
+                <span>大小</span>
+                <strong>{{ formatSize(selectedDetail.size) }}</strong>
+              </div>
+              <div class="meta-card">
+                <span>管理能力</span>
+                <strong>{{ selectedDetail.editable ? '可编辑' : '只读查看' }}</strong>
+              </div>
+            </div>
+            <div v-if="detailStageHint" class="status-note workflow-note">
+              {{ detailStageHint }}
+            </div>
           </div>
-          <div class="meta-card">
-            <span>格式</span>
-            <strong>{{ selectedDetail.extension?.toUpperCase() || 'FILE' }}</strong>
+        </section>
+
+        <section class="content-card detail-section-card">
+          <button class="section-heading section-heading-toggle" type="button" @click="toggleDetailSection('metadata')">
+            <div>
+              <span>检索元数据</span>
+              <small>影响关键词召回、过滤和排序</small>
+            </div>
+            <strong>{{ detailSections.metadata ? '收起' : '展开' }}</strong>
+          </button>
+          <div v-if="detailSections.metadata" class="detail-section-body">
+            <div class="metadata-form-grid">
+            <label class="metadata-field">
+              <span>标题</span>
+              <input v-model.trim="metadataForm.title" type="text" placeholder="用于展示和检索的标题" />
+            </label>
+            <label class="metadata-field">
+              <span>文档类型</span>
+              <select v-model="metadataForm.docType">
+                <option v-for="option in docTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+              </select>
+            </label>
+            <label class="metadata-field">
+              <span>适用对象</span>
+              <select v-model="metadataForm.audience">
+                <option v-for="option in audienceOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+              </select>
+            </label>
+            <label class="metadata-field">
+              <span>科室</span>
+              <div class="dept-tree-picker">
+                <button
+                  class="dept-tree-trigger"
+                  type="button"
+                  :disabled="isDeptTreeLoading"
+                  @click="toggleDeptTreePicker"
+                >
+                  <span>{{ departmentLabel(metadataForm.department) }}</span>
+                  <small>{{ isDeptTreeLoading ? '加载中' : '选择科室' }}</small>
+                </button>
+                <div v-if="isDeptTreePickerOpen" class="dept-tree-popover">
+                  <input
+                    v-model.trim="deptTreeKeyword"
+                    class="dept-tree-search"
+                    type="text"
+                    placeholder="搜索科室名称或编码"
+                  />
+                  <div class="dept-tree-options">
+                    <button
+                      v-for="option in filteredDeptTreeOptions"
+                      :key="option.deptCode"
+                      :class="['dept-tree-option', { active: normalizeDepartmentCode(metadataForm.department) === option.deptCode }]"
+                      type="button"
+                      :style="{ '--dept-depth': option.depth }"
+                      @click="selectDepartment(option.deptCode)"
+                    >
+                      <span class="dept-tree-branch" />
+                      <span class="dept-tree-option-label">{{ option.name }}</span>
+                      <small>{{ option.deptCode }}</small>
+                    </button>
+                    <div v-if="!filteredDeptTreeOptions.length" class="dept-tree-empty">
+                      没有匹配的科室
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </label>
+            <label class="metadata-field">
+              <span>医生/专家</span>
+              <input v-model.trim="metadataForm.doctorName" type="text" placeholder="医生或专家姓名" />
+            </label>
+            <label class="metadata-field">
+              <span>版本</span>
+              <input v-model.trim="metadataForm.version" type="text" placeholder="v1 / 2024版" />
+            </label>
+            <label class="metadata-field">
+              <span>生效时间</span>
+              <input v-model="metadataForm.effectiveAt" type="datetime-local" />
+            </label>
+            <label class="metadata-field">
+              <span>来源优先级</span>
+              <input v-model.number="metadataForm.sourcePriority" type="number" min="0" max="100" />
+            </label>
+            <label class="metadata-field metadata-field-wide">
+              <span>关键词</span>
+              <textarea v-model.trim="metadataForm.keywords" rows="3" placeholder="多个关键词用空格分隔" />
+            </label>
           </div>
-          <div class="meta-card">
-            <span>大小</span>
-            <strong>{{ formatSize(selectedDetail.size) }}</strong>
           </div>
-          <div class="meta-card">
-            <span>管理能力</span>
-            <strong>{{ selectedDetail.editable ? '可编辑' : '只读查看' }}</strong>
-          </div>
-        </div>
+        </section>
 
         <div v-if="selectedDetail.processingStatus === 'PROCESSING'" class="progress-card">
           <div class="progress-card-head">
@@ -220,27 +443,36 @@
           </p>
         </div>
 
-        <div class="content-card">
-          <div class="section-heading">
-            <span>解析原文</span>
-            <small>{{ isEditing ? '编辑模式' : '查看模式' }}</small>
+        <section class="content-card detail-section-card">
+          <button class="section-heading section-heading-toggle" type="button" @click="toggleDetailSection('content')">
+            <div>
+              <span>解析原文</span>
+              <small>{{ isEditing ? '编辑模式' : '查看模式' }}</small>
+            </div>
+            <strong>{{ detailSections.content ? '收起' : '展开' }}</strong>
+          </button>
+          <div v-if="detailSections.content" class="detail-section-body">
+            <p v-if="selectedDetail.statusMessage" class="status-note">{{ selectedDetail.statusMessage }}</p>
+            <textarea
+              v-if="isEditing"
+              v-model="editorContent"
+              class="content-editor"
+              spellcheck="false"
+            />
+            <pre v-else class="content-preview">{{ selectedDetail.extractedText || selectedDetail.statusMessage || '暂无内容' }}</pre>
           </div>
-          <p v-if="selectedDetail.statusMessage" class="status-note">{{ selectedDetail.statusMessage }}</p>
-          <textarea
-            v-if="isEditing"
-            v-model="editorContent"
-            class="content-editor"
-            spellcheck="false"
-          />
-          <pre v-else class="content-preview">{{ selectedDetail.extractedText || selectedDetail.statusMessage || '暂无内容' }}</pre>
-        </div>
+        </section>
 
-        <div class="content-card">
-          <div class="section-heading">
-            <span>RAG 切分结果</span>
-            <small>展示入向量库前的 chunk 内容</small>
-          </div>
-          <div class="chunk-list">
+        <section class="content-card detail-section-card">
+          <button class="section-heading section-heading-toggle" type="button" @click="toggleDetailSection('chunks')">
+            <div>
+              <span>RAG 切分结果</span>
+              <small>按需展开查看 chunk 内容</small>
+            </div>
+            <strong>{{ detailSections.chunks ? '收起' : '展开' }}</strong>
+          </button>
+          <div v-if="detailSections.chunks" class="detail-section-body">
+            <div class="chunk-list">
             <details
               v-for="chunk in selectedDetail.chunks"
               :key="chunk.index"
@@ -257,7 +489,8 @@
               {{ selectedDetail.processingStatus === 'PROCESSING' ? '当前文件正在处理中，RAG 切分完成后会自动刷新。' : '当前文件还没有可展示的切分结果。' }}
             </div>
           </div>
-        </div>
+          </div>
+        </section>
       </section>
 
       <section v-else class="empty-detail">
@@ -269,79 +502,261 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import axios from 'axios'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import AdminEntryActionButton from '@/components/AdminEntryActionButton.vue'
+import LogoutActionButton from '@/components/LogoutActionButton.vue'
 import shulanLogo from '@/assets/shulan-logo.png'
+import { apiClient, isAdmin, logout } from '@/lib/auth'
+import { audienceLabel, audienceOptions, docTypeLabel, docTypeOptions, knowledgeStage, stageLabel } from '@/lib/knowledgeUi'
+import { confirmDanger } from '@/lib/confirmDialog'
 
+const router = useRouter()
+const route = useRoute()
 const uploadInputRef = ref()
 const files = ref([])
+const selectedBatchHashes = ref([])
 const searchKeyword = ref('')
+const stageFilter = ref('ALL')
 const selectedHash = ref('')
 const selectedDetail = ref(null)
 const editorContent = ref('')
+const deptTree = ref([])
+const deptTreeKeyword = ref('')
+const isDeptTreePickerOpen = ref(false)
+const isDeptTreeLoading = ref(false)
 const isLoading = ref(false)
 const isUploading = ref(false)
 const isSaving = ref(false)
 const isDeleting = ref(false)
 const isEditing = ref(false)
-const wsConnected = ref(false)
-let knowledgeSocket = null
-let reconnectTimer = null
+const isPollingProcessing = ref(false)
+const detailSections = reactive({
+  overview: true,
+  metadata: true,
+  content: false,
+  chunks: false,
+})
+let processingPollTimer = null
+const GENERAL_DEPT_CODE = 'GENERAL'
+const GENERAL_DEPT_LABEL = '通用'
+
+const metadataForm = reactive({
+  docType: '',
+  department: '',
+  audience: 'BOTH',
+  version: 'v1',
+  effectiveAt: '',
+  title: '',
+  doctorName: '',
+  sourcePriority: 50,
+  keywords: '',
+})
+
+const stageFilterOptions = [
+  { value: 'ALL', label: '全部' },
+  { value: 'processing', label: '处理中' },
+  { value: 'ready', label: '待发布' },
+  { value: 'online', label: '已上线' },
+  { value: 'archived', label: '已归档' },
+]
 
 const filteredFiles = computed(() => {
   const keyword = searchKeyword.value.toLowerCase()
-  if (!keyword) {
-    return files.value
-  }
-
-  return files.value.filter((file) =>
-    [file.originalFilename, file.fileName, file.hash, file.parser]
+  return files.value.filter((file) => {
+    const stageMatched =
+      stageFilter.value === 'ALL' ||
+      (stageFilter.value === 'archived' && file.processingStatus === 'ARCHIVED') ||
+      (stageFilter.value === 'online' && file.processingStatus === 'PUBLISHED') ||
+      (stageFilter.value !== 'archived' && stageFilter.value !== 'online' && knowledgeStage(file.processingStatus) === stageFilter.value)
+    if (!stageMatched) {
+      return false
+    }
+    if (!keyword) {
+      return true
+    }
+    return [file.originalFilename, file.fileName, file.hash, file.parser]
       .filter(Boolean)
       .some((value) => value.toLowerCase().includes(keyword))
+  })
+})
+
+const deptNameByCode = computed(() => {
+  const mapping = new Map()
+  mapping.set(GENERAL_DEPT_CODE, GENERAL_DEPT_LABEL)
+  const visit = (nodes) => {
+    const safeNodes = Array.isArray(nodes) ? nodes : []
+    safeNodes.forEach((node) => {
+      const normalizedCode = normalizeDepartmentCode(node?.deptCode || node?.deptName)
+      if (normalizedCode && normalizedCode !== GENERAL_DEPT_CODE) {
+        mapping.set(normalizedCode, node.deptName || normalizedCode)
+      }
+      visit(node?.children || [])
+    })
+  }
+  visit(deptTree.value)
+  return mapping
+})
+
+const deptTreeOptions = computed(() => {
+  const options = [{ deptCode: GENERAL_DEPT_CODE, name: GENERAL_DEPT_LABEL, depth: 0 }]
+  const seen = new Set([GENERAL_DEPT_CODE])
+  const visit = (nodes, depth = 0) => {
+    const safeNodes = Array.isArray(nodes) ? nodes : []
+    safeNodes.forEach((node) => {
+      const normalizedCode = normalizeDepartmentCode(node?.deptCode || node?.deptName)
+      if (normalizedCode && !seen.has(normalizedCode)) {
+        seen.add(normalizedCode)
+        options.push({
+          deptCode: normalizedCode,
+          name: node.deptName || normalizedCode,
+          depth,
+        })
+      }
+      visit(node?.children || [], depth + 1)
+    })
+  }
+  visit(deptTree.value)
+  return options
+})
+
+const filteredDeptTreeOptions = computed(() => {
+  const keyword = deptTreeKeyword.value.toLowerCase()
+  if (!keyword) {
+    return deptTreeOptions.value
+  }
+  return deptTreeOptions.value.filter((option) =>
+    [option.name, option.deptCode]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(keyword))
   )
 })
 
-const fileCountText = computed(() => `${files.value.length} 个文件`)
-const detailStatusText = computed(() => {
-  if (isSaving.value) {
-    return '重建中'
+const stageCounts = computed(() => {
+  const counts = {
+    ALL: files.value.length,
+    processing: 0,
+    ready: 0,
+    online: 0,
+    archived: 0,
   }
-  if (selectedDetail.value?.processingStatus === 'PROCESSING') {
+  files.value.forEach((file) => {
+    if (file.processingStatus === 'ARCHIVED') {
+      counts.archived += 1
+      return
+    }
+    if (file.processingStatus === 'PUBLISHED') {
+      counts.online += 1
+      return
+    }
+    const stage = knowledgeStage(file.processingStatus)
+    if (stage === 'processing') {
+      counts.processing += 1
+    } else if (stage === 'ready') {
+      counts.ready += 1
+    }
+  })
+  return counts
+})
+
+const fileCountText = computed(() => `${files.value.length} 个文件`)
+const selectedBatchFiles = computed(() => files.value.filter((file) => selectedBatchHashes.value.includes(file.hash)))
+const batchPublishableCount = computed(() => selectedBatchFiles.value.filter((file) => ['READY', 'ARCHIVED'].includes(file.processingStatus)).length)
+const batchArchivableCount = computed(() => selectedBatchFiles.value.filter((file) => file.processingStatus === 'PUBLISHED').length)
+// 批量操作只允许作用在稳定态文件上，避免发布、归档和后台处理状态交错。
+const hasBatchProcessingFiles = computed(() =>
+  selectedBatchFiles.value.some((file) => ['DRAFT', 'PROCESSING'].includes(file.processingStatus))
+)
+const isDetailProcessing = computed(() =>
+  ['DRAFT', 'PROCESSING'].includes(selectedDetail.value?.processingStatus)
+)
+const canSaveMetadata = computed(() =>
+  Boolean(selectedDetail.value && ['READY', 'PUBLISHED'].includes(selectedDetail.value?.processingStatus))
+)
+const isDetailActionLocked = computed(() =>
+  isSaving.value || isPollingProcessing.value || isDetailProcessing.value
+)
+// 页面上只展示三段式业务状态，内部英文状态继续保留给后端和接口使用。
+// 这样管理员关注的是“处理中 / 待发布 / 已上线(已归档)”，而不是一堆技术态枚举值。
+const currentKnowledgeStage = computed(() => knowledgeStage(selectedDetail.value?.processingStatus))
+const detailStatusText = computed(() => {
+  if (!selectedDetail.value) {
+    return '待选择'
+  }
+  if (currentKnowledgeStage.value === 'processing') {
     return '处理中'
   }
-  if (selectedDetail.value?.processingStatus === 'FAILED') {
-    return '失败'
+  if (currentKnowledgeStage.value === 'ready') {
+    return '待发布'
   }
-  if (selectedDetail.value?.editable) {
-    return '可编辑'
+  return selectedDetail.value.processingStatus === 'ARCHIVED' ? '已归档' : '已上线'
+})
+const detailStageHint = computed(() => {
+  const status = selectedDetail.value?.processingStatus
+  if (!selectedDetail.value) {
+    return ''
   }
-  return selectedDetail.value ? '只读' : '待选择'
+  if (status === 'READY') {
+    return '当前文件已经完成解析和 embedding，下一步点击“发布上线”后，才会参与问答检索。'
+  }
+  if (status === 'PUBLISHED') {
+    return '当前文件已经上线，问答检索会优先引用这份知识内容。'
+  }
+  if (status === 'ARCHIVED') {
+    return '当前文件已归档下线。如需恢复检索，直接点击“重新上线”，不需要重新构建 embedding。'
+  }
+  if (status === 'PENDING_SYNC') {
+    return '当前节点不构建 embedding，请在本地构建环境完成索引后再同步到线上节点。'
+  }
+  if (status === 'FAILED') {
+    return selectedDetail.value.statusMessage || '当前文件处理失败，请修正后重新处理。'
+  }
+  return selectedDetail.value.statusMessage || '当前文件正在处理中，完成前不会进入问答检索。'
 })
 
 onMounted(async () => {
-  connectKnowledgeSocket()
-  await loadFiles()
+  await loadDeptTree()
+  await loadFiles(route.query.hash || '')
 })
 
+watch(
+  () => route.query.hash,
+  async (hash) => {
+    if (hash && hash !== selectedHash.value) {
+      await selectFile(hash)
+    }
+  }
+)
+
 onBeforeUnmount(() => {
-  wsConnected.value = false
-  if (reconnectTimer) {
-    window.clearTimeout(reconnectTimer)
-    reconnectTimer = null
-  }
-  if (knowledgeSocket) {
-    knowledgeSocket.close()
-    knowledgeSocket = null
-  }
+  stopProcessingPolling()
 })
+
+watch(
+  () => detailSections.metadata,
+  (opened) => {
+    if (!opened) {
+      closeDeptTreePicker()
+    }
+  }
+)
 
 const openUpload = () => {
   uploadInputRef.value?.click()
 }
 
 const backToChat = () => {
-  window.location.href = '/'
+  router.push('/')
+}
+
+const openAdminConsole = () => {
+  router.push('/admin')
+}
+
+const handleLogout = async () => {
+  await logout()
+  await router.replace('/login')
 }
 
 const sourceLabel = (source) => {
@@ -352,19 +767,6 @@ const sourceLabel = (source) => {
     return '本地'
   }
   return source || '未知'
-}
-
-const statusLabel = (status) => {
-  if (status === 'PROCESSING') {
-    return '处理中'
-  }
-  if (status === 'READY') {
-    return '已完成'
-  }
-  if (status === 'FAILED') {
-    return '失败'
-  }
-  return '未知'
 }
 
 const formatSize = (size) => {
@@ -387,6 +789,38 @@ const safeProgress = (value) => {
   return Math.max(0, Math.min(100, Math.round(value)))
 }
 
+const normalizeDepartmentCode = (value) => {
+  if (!value || value === GENERAL_DEPT_LABEL) {
+    return GENERAL_DEPT_CODE
+  }
+  return value
+}
+
+const departmentLabel = (value) => {
+  const normalized = normalizeDepartmentCode(value)
+  if (normalized === GENERAL_DEPT_CODE) {
+    return GENERAL_DEPT_LABEL
+  }
+  return deptNameByCode.value.get(normalized) || normalized
+}
+
+const toggleDeptTreePicker = () => {
+  isDeptTreePickerOpen.value = !isDeptTreePickerOpen.value
+  if (isDeptTreePickerOpen.value) {
+    deptTreeKeyword.value = ''
+  }
+}
+
+const closeDeptTreePicker = () => {
+  isDeptTreePickerOpen.value = false
+  deptTreeKeyword.value = ''
+}
+
+const selectDepartment = (deptCode) => {
+  metadataForm.department = normalizeDepartmentCode(deptCode)
+  closeDeptTreePicker()
+}
+
 const resolveAxiosErrorMessage = (error, fallback) => {
   const responseMessage = error?.response?.data?.message
   const traceId = error?.response?.data?.traceId || error?.response?.headers?.['x-trace-id']
@@ -399,15 +833,126 @@ const resolveAxiosErrorMessage = (error, fallback) => {
   return fallback
 }
 
+const applyFileSnapshot = (detail) => {
+  if (!detail?.hash) {
+    return
+  }
+  // 操作成功后先本地回写一份快照，目的是让左侧列表和快速筛选立刻看到状态变化。
+  // 否则用户会先看到“按钮提示成功”，但左侧状态还停在旧值，观感会像接口没生效。
+  files.value = files.value.map((file) => {
+    if (file.hash !== detail.hash) {
+      return file
+    }
+    return {
+      ...file,
+      processingStatus: detail.processingStatus ?? file.processingStatus,
+      statusMessage: detail.statusMessage ?? file.statusMessage,
+      progressPercent: typeof detail.progressPercent === 'number' ? detail.progressPercent : file.progressPercent,
+      currentBatch: typeof detail.currentBatch === 'number' ? detail.currentBatch : file.currentBatch,
+      totalBatches: typeof detail.totalBatches === 'number' ? detail.totalBatches : file.totalBatches,
+      docType: detail.docType ?? file.docType,
+      department: detail.department ?? file.department,
+      audience: detail.audience ?? file.audience,
+      version: detail.version ?? file.version,
+      effectiveAt: detail.effectiveAt ?? file.effectiveAt,
+      title: detail.title ?? file.title,
+      doctorName: detail.doctorName ?? file.doctorName,
+      sourcePriority: detail.sourcePriority ?? file.sourcePriority,
+      keywords: detail.keywords ?? file.keywords,
+    }
+  })
+}
+
+const clearDeletedFileSnapshot = (deletedHash) => {
+  if (!deletedHash) {
+    return ''
+  }
+  const nextFiles = files.value.filter((file) => file.hash !== deletedHash)
+  files.value = nextFiles
+  selectedBatchHashes.value = selectedBatchHashes.value.filter((hash) => hash !== deletedHash)
+  if (selectedHash.value === deletedHash) {
+    selectedHash.value = ''
+    selectedDetail.value = null
+    editorContent.value = ''
+    isEditing.value = false
+    closeDeptTreePicker()
+    syncMetadataForm(null)
+    stopProcessingPolling()
+    if (route.query.hash) {
+      router.replace({ path: '/knowledge', query: {} })
+    }
+  }
+  const candidate = nextFiles.find((file) => filteredFiles.value.some((visibleFile) => visibleFile.hash === file.hash))
+    || nextFiles[0]
+  return candidate?.hash || ''
+}
+
+const stopProcessingPolling = () => {
+  isPollingProcessing.value = false
+  if (processingPollTimer) {
+    window.clearTimeout(processingPollTimer)
+    processingPollTimer = null
+  }
+}
+
+const loadDeptTree = async () => {
+  isDeptTreeLoading.value = true
+  try {
+    const { data } = await apiClient.get('/api/aimed/dept/tree')
+    deptTree.value = Array.isArray(data) ? data : []
+  } catch (error) {
+    console.error('加载科室树失败:', error)
+    deptTree.value = []
+    ElMessage.error(resolveAxiosErrorMessage(error, '科室树加载失败，文档科室将只能选择通用。'))
+  } finally {
+    isDeptTreeLoading.value = false
+  }
+}
+
+const startProcessingPolling = (hash) => {
+  stopProcessingPolling()
+  if (!hash) {
+    return
+  }
+  // 知识库处理链是典型的后台任务，列表状态并不需要毫秒级实时推送。
+  // 这里直接用低频轮询做主链，避免 ws 握手失败后反复重连刷日志，同时也更容易稳定收尾。
+  isPollingProcessing.value = true
+  const poll = async () => {
+    try {
+      const { data } = await apiClient.get(`/api/aimed/knowledge/files/${hash}`)
+      selectedHash.value = data.hash
+    selectedDetail.value = data
+    editorContent.value = data?.extractedText || ''
+    syncMetadataForm(data)
+    closeDeptTreePicker()
+    files.value = files.value.map((file) => (file.hash === data.hash ? { ...file, ...data } : file))
+      if (!['DRAFT', 'PROCESSING'].includes(data.processingStatus)) {
+        stopProcessingPolling()
+        await loadFiles(data.hash)
+        return
+      }
+    } catch (error) {
+      console.error('轮询知识文件状态失败:', error)
+      ElMessage.error(resolveAxiosErrorMessage(error, '知识文件状态刷新失败，请稍后手动刷新。'))
+      stopProcessingPolling()
+      return
+    }
+    processingPollTimer = window.setTimeout(poll, 2000)
+  }
+  processingPollTimer = window.setTimeout(poll, 1500)
+}
+
 const loadFiles = async (preferredHash = '') => {
   isLoading.value = true
   try {
-    const { data } = await axios.get('/api/aimed/knowledge/files')
+    const { data } = await apiClient.get('/api/aimed/knowledge/files')
     files.value = Array.isArray(data) ? data : []
 
     const availableHash = preferredHash && files.value.some((file) => file.hash === preferredHash)
       ? preferredHash
       : files.value[0]?.hash
+
+    selectedBatchHashes.value = selectedBatchHashes.value.filter((hash) => files.value.some((file) => file.hash === hash))
 
     if (availableHash) {
       await selectFile(availableHash)
@@ -415,6 +960,10 @@ const loadFiles = async (preferredHash = '') => {
       selectedHash.value = ''
       selectedDetail.value = null
       isEditing.value = false
+      closeDeptTreePicker()
+      if (route.query.hash) {
+        router.replace({ path: '/knowledge', query: {} })
+      }
     }
   } catch (error) {
     console.error('加载知识库列表失败:', error)
@@ -430,11 +979,24 @@ const selectFile = async (hash) => {
   }
 
   try {
-    const { data } = await axios.get(`/api/aimed/knowledge/files/${hash}`)
+    const { data } = await apiClient.get(`/api/aimed/knowledge/files/${hash}`)
     selectedHash.value = hash
     selectedDetail.value = data
     editorContent.value = data?.extractedText || ''
+    syncMetadataForm(data)
+    closeDeptTreePicker()
     isEditing.value = false
+    detailSections.overview = true
+    // 详情页一旦点到“处理中”的文件，就主动进入锁定态。
+    // 这样页面不会出现“看起来还能点发布/归档，点了却报错”的反直觉体验。
+    if (['DRAFT', 'PROCESSING'].includes(data.processingStatus)) {
+      startProcessingPolling(data.hash)
+    } else {
+      stopProcessingPolling()
+    }
+    if (route.query.hash !== hash) {
+      router.replace({ path: '/knowledge', query: { hash } })
+    }
   } catch (error) {
     console.error('加载知识文件详情失败:', error)
     ElMessage.error(resolveAxiosErrorMessage(error, '知识文件详情加载失败。'))
@@ -452,7 +1014,7 @@ const uploadKnowledge = async (event) => {
   isUploading.value = true
 
   try {
-    const { data } = await axios.post('/api/aimed/knowledge/upload', formData, {
+    const { data } = await apiClient.post('/api/aimed/knowledge/upload', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
@@ -460,7 +1022,7 @@ const uploadKnowledge = async (event) => {
 
     const acceptedItem = (data.items || []).find((item) => item.status === 'QUEUED')
     await loadFiles(acceptedItem?.hash)
-    ElMessage.success(`文件已上传：后台处理中 ${data.accepted || 0} 个，跳过 ${data.skipped || 0} 个。`)
+    ElMessage.success(`文件已上传：后台处理中 ${data.accepted || 0} 个，跳过 ${data.skipped || 0} 个。处理完成后请在知识库页点击“发布上线”。`)
   } catch (error) {
     console.error('上传知识失败:', error)
     ElMessage.error(resolveAxiosErrorMessage(error, '知识文件上传失败，请检查格式或稍后重试。'))
@@ -472,13 +1034,31 @@ const uploadKnowledge = async (event) => {
 
 const startEdit = () => {
   editorContent.value = selectedDetail.value?.extractedText || ''
+  syncMetadataForm(selectedDetail.value)
+  closeDeptTreePicker()
+  detailSections.content = true
   isEditing.value = true
 }
 
 const cancelEdit = () => {
   editorContent.value = selectedDetail.value?.extractedText || ''
+  syncMetadataForm(selectedDetail.value)
+  closeDeptTreePicker()
   isEditing.value = false
 }
+
+const buildKnowledgeUpdatePayload = (contentOverride) => ({
+  content: contentOverride,
+  docType: metadataForm.docType || undefined,
+  department: normalizeDepartmentCode(metadataForm.department),
+  audience: metadataForm.audience || undefined,
+  version: metadataForm.version || undefined,
+  effectiveAt: metadataForm.effectiveAt || undefined,
+  title: metadataForm.title || undefined,
+  doctorName: metadataForm.doctorName || undefined,
+  sourcePriority: Number.isFinite(Number(metadataForm.sourcePriority)) ? Number(metadataForm.sourcePriority) : undefined,
+  keywords: metadataForm.keywords || undefined,
+})
 
 const saveEdit = async () => {
   if (!selectedDetail.value) {
@@ -487,14 +1067,19 @@ const saveEdit = async () => {
 
   isSaving.value = true
   try {
-    const { data } = await axios.put(`/api/aimed/knowledge/files/${selectedDetail.value.hash}`, {
-      content: editorContent.value,
-    })
+    const { data } = await apiClient.put(
+      `/api/aimed/knowledge/files/${selectedDetail.value.hash}`,
+      buildKnowledgeUpdatePayload(editorContent.value)
+    )
     selectedHash.value = data.hash
     selectedDetail.value = data
     editorContent.value = data.extractedText || ''
+    syncMetadataForm(data)
     isEditing.value = false
     await loadFiles(data.hash)
+    if (['DRAFT', 'PROCESSING'].includes(data.processingStatus)) {
+      startProcessingPolling(data.hash)
+    }
     ElMessage.success('知识文件已保存，并完成向量重建。')
   } catch (error) {
     console.error('更新知识文件失败:', error)
@@ -504,20 +1089,91 @@ const saveEdit = async () => {
   }
 }
 
+const saveMetadata = async () => {
+  if (!selectedDetail.value) {
+    return
+  }
+  isSaving.value = true
+  try {
+    const { data } = await apiClient.put(
+      `/api/aimed/knowledge/files/${selectedDetail.value.hash}`,
+      buildKnowledgeUpdatePayload(undefined)
+    )
+    selectedHash.value = data.hash
+    selectedDetail.value = data
+    editorContent.value = data.extractedText || ''
+    syncMetadataForm(data)
+    applyFileSnapshot(data)
+    await loadFiles(data.hash)
+    ElMessage.success('文档元数据已更新。')
+  } catch (error) {
+    console.error('更新知识元数据失败:', error)
+    ElMessage.error(resolveAxiosErrorMessage(error, '知识元数据保存失败。'))
+  } finally {
+    isSaving.value = false
+  }
+}
+
+const publishFile = async () => {
+  if (!selectedDetail.value) {
+    return
+  }
+
+  try {
+    const { data } = await apiClient.post(`/api/aimed/knowledge/files/${selectedDetail.value.hash}/publish`)
+    selectedDetail.value = data
+    applyFileSnapshot(data)
+    await loadFiles(data.hash)
+    ElMessage.success(data.processingStatus === 'PUBLISHED' && data.statusMessage?.includes('重新上线') ? '知识文件已重新上线。' : '知识文件已发布。')
+  } catch (error) {
+    console.error('发布知识文件失败:', error)
+    ElMessage.error(resolveAxiosErrorMessage(error, '发布知识文件失败。'))
+  }
+}
+
+const archiveFile = async () => {
+  if (!selectedDetail.value) {
+    return
+  }
+
+  try {
+    const { data } = await apiClient.post(`/api/aimed/knowledge/files/${selectedDetail.value.hash}/archive`)
+    selectedDetail.value = data
+    applyFileSnapshot(data)
+    await loadFiles(data.hash)
+    ElMessage.success('知识文件已归档。')
+  } catch (error) {
+    console.error('归档知识文件失败:', error)
+    ElMessage.error(resolveAxiosErrorMessage(error, '归档知识文件失败。'))
+  }
+}
+
+const reprocessFile = async () => {
+  if (!selectedDetail.value) {
+    return
+  }
+
+  try {
+    const { data } = await apiClient.post(`/api/aimed/knowledge/files/${selectedDetail.value.hash}/reprocess`)
+    selectedDetail.value = data
+    applyFileSnapshot(data)
+    await loadFiles(data.hash)
+    ElMessage.success('知识文件已重新加入处理队列。')
+  } catch (error) {
+    console.error('重新处理知识文件失败:', error)
+    ElMessage.error(resolveAxiosErrorMessage(error, '重新处理知识文件失败。'))
+  }
+}
+
 const deleteFile = async () => {
   if (!selectedDetail.value) {
     return
   }
 
   try {
-    await ElMessageBox.confirm(
+    await confirmDanger(
       `确认删除知识文件「${selectedDetail.value.originalFilename}」吗？这会同时移除它的 RAG 切分数据。`,
-      '删除确认',
-      {
-        confirmButtonText: '删除',
-        cancelButtonText: '取消',
-        type: 'warning',
-      }
+      '删除知识文件'
     )
   } catch {
     return
@@ -525,12 +1181,10 @@ const deleteFile = async () => {
 
   isDeleting.value = true
   try {
-    await axios.delete(`/api/aimed/knowledge/files/${selectedDetail.value.hash}`)
     const currentHash = selectedDetail.value.hash
-    selectedHash.value = ''
-    selectedDetail.value = null
-    isEditing.value = false
-    await loadFiles(files.value.find((file) => file.hash !== currentHash)?.hash)
+    await apiClient.delete(`/api/aimed/knowledge/files/${currentHash}`)
+    const nextHash = clearDeletedFileSnapshot(currentHash)
+    await loadFiles(nextHash)
     ElMessage.success('知识文件已删除。')
   } catch (error) {
     console.error('删除知识文件失败:', error)
@@ -540,92 +1194,75 @@ const deleteFile = async () => {
   }
 }
 
-const connectKnowledgeSocket = () => {
-  if (knowledgeSocket && (knowledgeSocket.readyState === WebSocket.OPEN || knowledgeSocket.readyState === WebSocket.CONNECTING)) {
+const toggleBatchHash = (hash, checked) => {
+  const next = new Set(selectedBatchHashes.value)
+  if (checked) {
+    next.add(hash)
+  } else {
+    next.delete(hash)
+  }
+  selectedBatchHashes.value = Array.from(next)
+}
+
+const toggleSelectAllVisible = () => {
+  const visibleHashes = filteredFiles.value.map((file) => file.hash)
+  const everySelected = visibleHashes.length > 0 && visibleHashes.every((hash) => selectedBatchHashes.value.includes(hash))
+  selectedBatchHashes.value = everySelected ? [] : visibleHashes
+}
+
+const runBatchAction = async (action) => {
+  // 批量上线支持两类文件：
+  // - READY：第一次正式上线
+  // - ARCHIVED：不重建 embedding，直接重新上线
+  const eligible = selectedBatchFiles.value
+    .filter((file) => (action === 'publish' ? ['READY', 'ARCHIVED'].includes(file.processingStatus) : file.processingStatus === 'PUBLISHED'))
+    .map((file) => file.hash)
+  if (!eligible.length) {
+    ElMessage.warning(action === 'publish' ? '请选择待发布或已归档的文件。' : '请选择已发布的文件。')
     return
   }
-
-  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  const host = window.location.hostname || 'localhost'
-  const port = import.meta.env.VITE_KNOWLEDGE_WS_PORT || '8080'
-  knowledgeSocket = new WebSocket(`${protocol}://${host}:${port}/ws/knowledge`)
-
-  knowledgeSocket.onopen = () => {
-    wsConnected.value = true
-  }
-
-  knowledgeSocket.onmessage = async (event) => {
-    try {
-      const payload = JSON.parse(event.data)
-      applyProgressPayload(payload)
-
-      if (payload.processingStatus === 'READY' || payload.processingStatus === 'FAILED') {
-        const preferredHash = selectedHash.value || payload.hash
-        await loadFiles(preferredHash)
-      }
-
-      if (payload.processingStatus === 'READY') {
-        ElMessage.success(`${payload.originalFilename || '知识文件'} 已完成 RAG 切分。`)
-      } else if (payload.processingStatus === 'FAILED') {
-        ElMessage.error(payload.statusMessage || '知识文件处理失败。')
-      }
-    } catch (error) {
-      console.error('处理知识库通知失败:', error)
+  try {
+    const { data } = await apiClient.post(`/api/aimed/knowledge/files/batch/${action}`, { hashes: eligible })
+    if (Array.isArray(data)) {
+      data.forEach((item) => applyFileSnapshot(item))
     }
-  }
-
-  knowledgeSocket.onerror = () => {
-    wsConnected.value = false
-  }
-
-  knowledgeSocket.onclose = () => {
-    wsConnected.value = false
-    if (reconnectTimer) {
-      window.clearTimeout(reconnectTimer)
-    }
-    reconnectTimer = window.setTimeout(() => {
-      reconnectTimer = null
-      connectKnowledgeSocket()
-    }, 3000)
+    await loadFiles(selectedHash.value)
+    ElMessage.success(action === 'publish' ? `已批量上线 ${eligible.length} 个文件。` : `已批量归档 ${eligible.length} 个文件。`)
+  } catch (error) {
+    console.error('批量知识操作失败:', error)
+    ElMessage.error(resolveAxiosErrorMessage(error, '批量知识操作失败。'))
   }
 }
 
-const applyProgressPayload = (payload) => {
-  if (!payload?.hash) {
-    return
-  }
-
-  files.value = files.value.map((file) => {
-    if (file.hash !== payload.hash) {
-      return file
-    }
-    return {
-      ...file,
-      processingStatus: payload.processingStatus || file.processingStatus,
-      statusMessage: payload.statusMessage || file.statusMessage,
-      progressPercent: typeof payload.progressPercent === 'number' ? payload.progressPercent : file.progressPercent,
-      currentBatch: typeof payload.currentBatch === 'number' ? payload.currentBatch : file.currentBatch,
-      totalBatches: typeof payload.totalBatches === 'number' ? payload.totalBatches : file.totalBatches,
-    }
-  })
-
-  if (selectedDetail.value?.hash === payload.hash) {
-    selectedDetail.value = {
-      ...selectedDetail.value,
-      processingStatus: payload.processingStatus || selectedDetail.value.processingStatus,
-      statusMessage: payload.statusMessage || selectedDetail.value.statusMessage,
-      progressPercent: typeof payload.progressPercent === 'number' ? payload.progressPercent : selectedDetail.value.progressPercent,
-      currentBatch: typeof payload.currentBatch === 'number' ? payload.currentBatch : selectedDetail.value.currentBatch,
-      totalBatches: typeof payload.totalBatches === 'number' ? payload.totalBatches : selectedDetail.value.totalBatches,
-    }
-  }
+const syncMetadataForm = (detail) => {
+  metadataForm.docType = detail?.docType || 'HOSPITAL_OVERVIEW'
+  metadataForm.department = normalizeDepartmentCode(detail?.department)
+  metadataForm.audience = detail?.audience || 'BOTH'
+  metadataForm.version = detail?.version || 'v1'
+  metadataForm.effectiveAt = toLocalDateTimeInput(detail?.effectiveAt)
+  metadataForm.title = detail?.title || detail?.originalFilename || ''
+  metadataForm.doctorName = detail?.doctorName || ''
+  metadataForm.sourcePriority = Number.isFinite(Number(detail?.sourcePriority)) ? Number(detail.sourcePriority) : 50
+  metadataForm.keywords = detail?.keywords || ''
 }
+
+const toggleDetailSection = (key) => {
+  detailSections[key] = !detailSections[key]
+}
+
+const toLocalDateTimeInput = (value) => {
+  if (!value) {
+    return ''
+  }
+  return String(value).slice(0, 16)
+}
+
 </script>
 
 <style scoped>
 .knowledge-shell {
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-columns: 280px minmax(0, 1fr);
   gap: 18px;
   height: 100dvh;
   padding: 18px;
@@ -645,8 +1282,18 @@ const applyProgressPayload = (payload) => {
 .knowledge-sidebar {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (min-width: 1101px) {
+  .knowledge-sidebar {
+    position: sticky;
+    top: 0;
+    max-height: calc(100dvh - 36px);
+    padding-right: 4px;
+  }
 }
 
 .sidebar-card,
@@ -664,21 +1311,21 @@ const applyProgressPayload = (payload) => {
 .summary-card,
 .detail-card,
 .empty-detail {
-  padding: 18px;
+  padding: 16px;
 }
 
 .brand-lockup {
   display: flex;
-  gap: 12px;
+  gap: 10px;
   align-items: center;
 }
 
 .brand-logo {
-  width: 60px;
-  height: 60px;
-  border-radius: 18px;
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
   background: linear-gradient(180deg, #ffffff 0%, #eef8f7 100%);
-  padding: 8px;
+  padding: 7px;
   box-shadow: inset 0 0 0 1px rgba(79, 160, 160, 0.12);
 }
 
@@ -699,6 +1346,10 @@ const applyProgressPayload = (payload) => {
   color: #14373e;
 }
 
+.brand-card h1 {
+  font-size: 18px;
+}
+
 .brand-subtitle,
 .sidebar-note,
 .empty-detail p {
@@ -708,27 +1359,84 @@ const applyProgressPayload = (payload) => {
   color: #55757b;
 }
 
-.back-button,
-.primary-button,
-.secondary-button,
-.danger-button {
+.sidebar-note-steps {
+  padding: 10px 12px;
   border-radius: 14px;
+  background: rgba(239, 248, 247, 0.92);
+  color: #3b6c74;
+}
+
+.sidebar-note-processing {
+  margin-top: 0;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 244, 222, 0.9);
+  color: #91600d;
+}
+
+.stage-filter-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.stage-filter-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 12px;
   border: none;
-  min-height: 42px;
-  font-weight: 700;
+  border-radius: 14px;
+  background: rgba(240, 247, 247, 0.9);
+  box-shadow: inset 0 0 0 1px rgba(90, 152, 156, 0.12);
+  color: #3f6d73;
+  font: inherit;
   cursor: pointer;
 }
 
-.back-button,
+.stage-filter-chip span {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.stage-filter-chip strong {
+  font-size: 12px;
+  color: #1c5c64;
+}
+
+.stage-filter-chip.active {
+  background: linear-gradient(135deg, rgba(46, 136, 140, 0.16) 0%, rgba(87, 173, 163, 0.2) 100%);
+  box-shadow: inset 0 0 0 1px rgba(46, 136, 140, 0.18);
+  color: #184b53;
+}
+
+.primary-button,
+.secondary-button,
+.danger-button,
+.summary-nav-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  border: none;
+  min-height: 42px;
+  max-width: 100%;
+  padding: 0 14px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+  overflow: hidden;
+  vertical-align: middle;
+  cursor: pointer;
+}
+
 .secondary-button {
   color: #216a72;
   background: rgba(227, 244, 242, 0.86);
   box-shadow: inset 0 0 0 1px rgba(46, 136, 140, 0.14);
-}
-
-.back-button {
-  width: 100%;
-  margin-top: 16px;
 }
 
 .primary-button {
@@ -752,7 +1460,30 @@ const applyProgressPayload = (payload) => {
 
 .action-grid {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.operations-card .sidebar-heading {
+  margin-bottom: 10px;
+}
+
+.operations-card .action-grid .primary-button,
+.operations-card .action-grid .secondary-button {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.batch-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.batch-button {
+  min-height: 36px;
+  padding-inline: 12px;
 }
 
 .sidebar-heading,
@@ -801,16 +1532,25 @@ const applyProgressPayload = (payload) => {
 .knowledge-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  max-height: 44dvh;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+  max-height: none;
   overflow-y: auto;
+}
+
+.filter-card {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
 }
 
 .knowledge-item {
   width: 100%;
-  padding: 12px;
+  padding: 10px 11px;
   border: 1px solid rgba(79, 160, 160, 0.14);
-  border-radius: 16px;
+  border-radius: 14px;
   background: linear-gradient(180deg, rgba(249, 252, 252, 0.96) 0%, rgba(238, 247, 246, 0.88) 100%);
   text-align: left;
   color: #17393f;
@@ -829,29 +1569,69 @@ const applyProgressPayload = (payload) => {
 .knowledge-meta {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
+}
+
+.knowledge-select-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.knowledge-select-box input {
+  width: 16px;
+  height: 16px;
 }
 
 .knowledge-name {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 700;
   color: #174047;
   word-break: break-word;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .knowledge-meta {
-  margin-top: 8px;
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
   font-size: 11px;
   color: #618187;
 }
 
+.knowledge-meta-compact {
+  margin-top: 8px;
+}
+
+.knowledge-subline {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #5c7e84;
+}
+
+.knowledge-subline span + span::before {
+  content: '·';
+  margin-right: 8px;
+  color: rgba(92, 126, 132, 0.56);
+}
+
 .progress-inline {
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 .progress-inline-text {
   display: inline-block;
-  margin-top: 6px;
+  margin-top: 4px;
   font-size: 11px;
   color: #4f767d;
 }
@@ -918,31 +1698,28 @@ const applyProgressPayload = (payload) => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 58px;
-  padding: 4px 10px;
+  min-width: 54px;
+  padding: 3px 9px;
   border-radius: 999px;
   font-size: 11px;
   font-weight: 700;
 }
 
-.processing-tag-processing {
+.processing-tag-processing,
+.processing-tag-stage-processing {
   color: #9a6400;
   background: rgba(255, 190, 61, 0.18);
 }
 
-.processing-tag-ready {
+.processing-tag-ready,
+.processing-tag-stage-ready {
   color: #0f766e;
   background: rgba(15, 118, 110, 0.14);
 }
 
-.processing-tag-failed {
-  color: #b42318;
-  background: rgba(180, 35, 24, 0.12);
-}
-
-.processing-tag-unknown {
-  color: #51646b;
-  background: rgba(81, 100, 107, 0.12);
+.processing-tag-stage-online {
+  color: #1a5c66;
+  background: rgba(46, 136, 140, 0.14);
 }
 
 .source-tag,
@@ -950,7 +1727,7 @@ const applyProgressPayload = (payload) => {
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
-  padding: 4px 8px;
+  padding: 3px 8px;
   font-size: 11px;
   font-weight: 700;
 }
@@ -982,19 +1759,49 @@ const applyProgressPayload = (payload) => {
 .knowledge-main {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   min-height: 0;
   overflow: hidden;
 }
 
 .summary-card {
   justify-content: space-between;
-  gap: 16px;
+  gap: 14px;
   flex-shrink: 0;
+}
+
+.summary-content {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.summary-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.summary-nav-button {
+  min-height: 40px;
+  border: none;
+  color: #216a72;
+  background: rgba(227, 244, 242, 0.86);
+  box-shadow: inset 0 0 0 1px rgba(46, 136, 140, 0.14);
+}
+
+.summary-nav-button:hover {
+  background: rgba(216, 238, 236, 0.96);
 }
 
 .summary-stats {
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .summary-stat,
@@ -1019,9 +1826,77 @@ const applyProgressPayload = (payload) => {
   color: #17424a;
 }
 
+.summary-caption {
+  margin: 10px 0 0;
+  max-width: 560px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: #5a7b80;
+}
+
 .detail-card {
   min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.knowledge-stage-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.knowledge-stage-item {
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(244, 250, 249, 0.82);
+  box-shadow: inset 0 0 0 1px rgba(90, 152, 156, 0.12);
+}
+
+.knowledge-stage-item span {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #40666d;
+}
+
+.knowledge-stage-item small {
+  display: block;
+  line-height: 1.5;
+  color: #68878c;
+}
+
+.knowledge-stage-item.active {
+  background: linear-gradient(180deg, rgba(230, 245, 243, 0.96) 0%, rgba(251, 255, 255, 0.98) 100%);
+  box-shadow: inset 0 0 0 1px rgba(46, 136, 140, 0.18), 0 12px 24px rgba(29, 96, 102, 0.08);
+}
+
+.knowledge-stage-item.active span {
+  color: #184952;
+}
+
+.detail-lock-banner {
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 190, 61, 0.28);
+  background: linear-gradient(180deg, rgba(255, 247, 229, 0.96) 0%, rgba(255, 252, 244, 0.98) 100%);
+  color: #7a580e;
+}
+
+.detail-lock-banner strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 14px;
+}
+
+.detail-lock-banner p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .detail-toolbar {
@@ -1038,22 +1913,241 @@ const applyProgressPayload = (payload) => {
 
 .slim-button {
   min-height: 38px;
-  padding: 0 14px;
+}
+
+.detail-actions {
+  align-items: flex-start;
+}
+
+.detail-actions > button,
+.summary-actions > button {
+  flex: 0 0 auto;
+}
+
+.summary-actions :deep(.admin-entry-button),
+.summary-actions :deep(.logout-action-button) {
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.summary-actions :deep(.admin-entry-icon-svg),
+.summary-actions :deep(.logout-action-icon-svg) {
+  display: block;
+  width: 14px;
+  height: 14px;
+  max-width: 14px;
+  max-height: 14px;
 }
 
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
-  margin-top: 16px;
+}
+
+.metadata-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.metadata-field {
+  display: grid;
+  gap: 8px;
+}
+
+.metadata-field span {
+  font-size: 12px;
+  color: #5a7c81;
+}
+
+.metadata-field input,
+.metadata-field select,
+.metadata-field textarea {
+  width: 100%;
+  padding: 11px 13px;
+  border: 1px solid rgba(91, 145, 149, 0.18);
+  border-radius: 14px;
+  background: rgba(244, 250, 249, 0.88);
+  color: #173b41;
+  font: inherit;
+}
+
+.dept-tree-picker {
+  position: relative;
+}
+
+.dept-tree-trigger {
+  display: flex;
+  width: 100%;
+  min-height: 46px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 13px;
+  border: 1px solid rgba(91, 145, 149, 0.18);
+  border-radius: 14px;
+  background: rgba(244, 250, 249, 0.88);
+  color: #173b41;
+  font: inherit;
+  cursor: pointer;
+}
+
+.dept-tree-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.dept-tree-trigger span {
+  margin: 0;
+  color: #173b41;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.dept-tree-trigger small {
+  color: #6a8a8f;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.dept-tree-popover {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(46, 136, 140, 0.18);
+  border-radius: 18px;
+  background: rgba(250, 254, 253, 0.98);
+  box-shadow: 0 22px 48px rgba(23, 65, 72, 0.18);
+}
+
+.dept-tree-search {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid rgba(91, 145, 149, 0.18);
+  border-radius: 12px;
+  background: #f4faf9;
+  color: #173b41;
+  font: inherit;
+}
+
+.dept-tree-options {
+  display: grid;
+  gap: 4px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.dept-tree-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 10px 7px calc(10px + var(--dept-depth, 0) * 18px);
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: #1d464d;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dept-tree-option:hover,
+.dept-tree-option.active {
+  background: rgba(46, 136, 140, 0.12);
+}
+
+.dept-tree-branch {
+  width: 12px;
+  height: 16px;
+  border-left: 1px solid rgba(46, 136, 140, 0.28);
+  border-bottom: 1px solid rgba(46, 136, 140, 0.28);
+  border-radius: 0 0 0 6px;
+}
+
+.dept-tree-option-label {
+  overflow: hidden;
+  color: #1b454c;
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dept-tree-option small {
+  color: #789399;
+  font-size: 11px;
+}
+
+.dept-tree-empty {
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(240, 247, 247, 0.88);
+  color: #6a858b;
+  text-align: center;
+}
+
+.metadata-field textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+
+.metadata-field-wide {
+  grid-column: 1 / -1;
 }
 
 .content-card {
-  margin-top: 16px;
-  padding: 16px;
+  padding: 14px 16px;
   border-radius: 20px;
   background: rgba(247, 251, 251, 0.9);
   box-shadow: inset 0 0 0 1px rgba(90, 152, 156, 0.1);
+}
+
+.detail-section-card {
+  display: grid;
+  gap: 12px;
+}
+
+.detail-section-body {
+  display: grid;
+  gap: 12px;
+}
+
+.section-heading-toggle {
+  width: 100%;
+  border: none;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.section-heading-toggle div {
+  min-width: 0;
+}
+
+.section-heading-toggle strong {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(235, 246, 245, 0.92);
+  color: #2b6670;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1px rgba(90, 152, 156, 0.12);
 }
 
 .status-note {
@@ -1064,6 +2158,10 @@ const applyProgressPayload = (payload) => {
   color: #43666b;
   font-size: 13px;
   line-height: 1.6;
+}
+
+.workflow-note {
+  margin-top: 0;
 }
 
 .content-editor,
@@ -1138,6 +2236,13 @@ const applyProgressPayload = (payload) => {
     grid-template-columns: 1fr;
     height: auto;
     min-height: 100dvh;
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .action-grid {
+    grid-template-columns: 1fr;
   }
 
   .knowledge-sidebar,
@@ -1151,21 +2256,201 @@ const applyProgressPayload = (payload) => {
     flex-direction: column;
   }
 
+  .summary-content {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .summary-actions {
+    justify-content: flex-start;
+  }
+
   .detail-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .metadata-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dept-tree-popover {
+    position: static;
+  }
+
+  .knowledge-stage-strip {
+    grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 720px) {
   .knowledge-shell {
-    padding: 12px;
-    gap: 12px;
+    padding: 10px;
+    gap: 10px;
+  }
+
+  .sidebar-card,
+  .summary-card,
+  .detail-card,
+  .empty-detail {
+    padding: 14px;
+    border-radius: 18px;
+  }
+
+  .brand-lockup {
+    align-items: flex-start;
+  }
+
+  .brand-logo {
+    width: 54px;
+    height: 54px;
+    border-radius: 16px;
+  }
+
+  .brand-card h1,
+  .summary-card h2,
+  .empty-detail h3 {
+    font-size: 22px;
+  }
+
+  .brand-subtitle,
+  .sidebar-note,
+  .empty-detail p,
+  .status-note,
+  .progress-note {
+    font-size: 12px;
+  }
+
+  .action-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .batch-toolbar {
+    flex-direction: column;
+  }
+
+  .stage-filter-row {
+    grid-template-columns: 1fr;
+  }
+
+  .knowledge-list {
+    max-height: none;
   }
 
   .summary-stats,
   .detail-grid {
     width: 100%;
+  }
+
+  .summary-stats {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  .summary-stat,
+  .meta-card {
+    padding: 9px 10px;
+  }
+
+  .detail-toolbar,
+  .detail-badges,
+  .detail-actions,
+  .progress-card-head,
+  .chunk-item summary {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .detail-actions {
+    width: 100%;
+  }
+
+  .detail-actions .slim-button,
+  .detail-actions .danger-button {
+    width: 100%;
+  }
+
+  .content-card {
+    margin-top: 14px;
+    padding: 14px;
+    border-radius: 16px;
+  }
+
+  .content-editor,
+  .content-preview,
+  .chunk-content {
+    min-height: 180px;
+    padding: 12px;
+  }
+
+  .chunk-item summary {
+    padding: 12px 14px;
+  }
+
+  .chunk-preview {
+    padding: 0 14px 10px;
+    font-size: 12px;
+  }
+
+  .chunk-content {
+    margin: 0 14px 14px;
+  }
+}
+
+@media (max-width: 520px) {
+  .knowledge-shell {
+    padding: 8px;
+    gap: 8px;
+  }
+
+  .sidebar-card,
+  .summary-card,
+  .detail-card,
+  .empty-detail {
+    padding: 12px;
+    border-radius: 16px;
+  }
+
+  .search-input {
+    min-height: 40px;
+    padding: 0 12px;
+  }
+
+  .knowledge-item {
+    padding: 10px;
+    border-radius: 14px;
+  }
+
+  .knowledge-item-top,
+  .knowledge-meta {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .processing-tag,
+  .source-tag,
+  .detail-badge {
+    min-width: 0;
+  }
+
+  .progress-card {
+    padding: 12px;
+    border-radius: 16px;
+  }
+
+  .progress-value {
+    font-size: 20px;
+  }
+
+  .primary-button,
+  .secondary-button,
+  .danger-button,
+  .back-button {
+    min-height: 38px;
   }
 }
 </style>

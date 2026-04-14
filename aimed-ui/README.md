@@ -1,12 +1,12 @@
-# AiMed-UI
+# AiHos UI
 
 ## 1 前言
 
-[AiMed]([https://github.com/digitzh/AiMed](https://github.com/linkshark/AI-Hos)) 的UI界面，采用Node.js + Vue 3 + Vite构建。
+[AiHos](https://github.com/linkshark/AI-Hos) 的 UI 界面，采用 Node.js + Vue 3 + Vite 构建。
 
 ## 2 使用方法
 
-运行AiMed后，执行下面命令运行UI页面：
+运行 AiHos 后，执行下面命令运行 UI 页面：
 ```shell
 npm run dev
 ```

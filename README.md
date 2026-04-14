@@ -90,7 +90,7 @@ AiHos/
 ├── aimed-ui/                  # Vue 3 前端
 ├── config/                    # 本地 / 线上私有配置
 ├── data/knowledge-base/       # 本地知识文件目录
-├── docs/                      # 部署、运行、架构文档
+├── docs/                      # 本地私有文档目录，不随远端仓库发布
 ├── scripts/                   # 本地运行、线上部署脚本
 ├── src/main/java/...          # Spring Boot 后端
 ├── src/main/resources/        # prompt、内置知识、配置模板
@@ -109,11 +109,6 @@ AiHos/
 ## 🚀 快速开始
 
 ### 1. 本地运行
-
-优先参考：
-
-- [快速开始](docs/quick-start.md)
-- [本地运行说明](docs/local-run.md)
 
 最常见的启动方式：
 
@@ -134,26 +129,9 @@ npm run dev
 - 本地 Ollama 负责本地问答 / embedding
 - 千问在线作为可切换高质量入口保留
 
-### 2. 线上部署
+### 2. 本地文档
 
-部署与运行文档：
-
-- [线上部署说明](docs/deploy-online-idea.md)
-- [SkyWalking 部署说明](docs/skywalking-deploy.md)
-- [Chroma 部署说明](docs/chroma-deploy.md)
-
----
-
-## 📚 文档入口
-
-- [快速开始](docs/quick-start.md)
-- [本地运行说明](docs/local-run.md)
-- [模块说明](docs/modules.md)
-- [SkyWalking 部署说明](docs/skywalking-deploy.md)
-- [Chroma 部署说明](docs/chroma-deploy.md)
-- [MCP 接入管理](docs/mcp-admin.md)
-- [项目接手与架构说明](docs/project-handover.md)
-- [面试讲解提纲](docs/interview-guide.md)
+运行、部署、模块说明和接手资料保留在本地 `docs/` 目录。该目录已加入 `.gitignore`，不会继续发布到 GitHub。
 
 ---
 

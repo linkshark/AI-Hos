@@ -3,7 +3,6 @@ package com.linkjb.aimed.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.linkjb.aimed.bean.mcp.McpServerHeaderItem;
 import com.linkjb.aimed.bean.mcp.McpServerItem;
@@ -19,17 +18,10 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * MCP 服务管理。
@@ -54,6 +46,8 @@ public class McpServerAdminService {
     private final McpServerConfigMapper mcpServerConfigMapper;
     private final ObjectMapper objectMapper;
     private final AuditLogService auditLogService;
+    private final McpJsonRpcClient mcpJsonRpcClient;
+    private final McpToolMatcher mcpToolMatcher;
 
     public McpServerAdminService(McpServerConfigMapper mcpServerConfigMapper,
                                  ObjectMapper objectMapper,
@@ -61,6 +55,8 @@ public class McpServerAdminService {
         this.mcpServerConfigMapper = mcpServerConfigMapper;
         this.objectMapper = objectMapper;
         this.auditLogService = auditLogService;
+        this.mcpJsonRpcClient = new McpJsonRpcClient(objectMapper);
+        this.mcpToolMatcher = new McpToolMatcher();
     }
 
     public List<McpServerItem> listServers() {
@@ -168,8 +164,8 @@ public class McpServerAdminService {
         if (!StringUtils.hasText(toolName)) {
             return "status=MISSING_TOOL\nmessage=请提供 MCP 工具名称";
         }
-        Map<String, Object> arguments = parseToolArguments(argumentsJson);
-        String requestedTool = normalizeRequestedToolName(toolName);
+        Map<String, Object> arguments = mcpJsonRpcClient.parseToolArguments(argumentsJson);
+        String requestedTool = mcpToolMatcher.normalizeRequestedToolName(toolName);
         String requestedServer = null;
         int separatorIndex = requestedTool.indexOf('.');
         if (separatorIndex > 0 && separatorIndex < requestedTool.length() - 1) {
@@ -186,13 +182,13 @@ public class McpServerAdminService {
         for (McpServerItem server : servers) {
             try {
                 List<McpServerToolItem> tools = fetchTools(server);
-                McpServerToolItem matchedTool = resolveRequestedTool(effectiveRequestedTool, tools);
+                McpServerToolItem matchedTool = mcpToolMatcher.resolveRequestedTool(effectiveRequestedTool, tools);
                 if (matchedTool == null) {
                     continue;
                 }
-                JsonNode result = callTool(server, matchedTool.name(), arguments);
+                com.fasterxml.jackson.databind.JsonNode result = callTool(server, matchedTool.name(), arguments);
                 recordAgentMcpToolCall(server, matchedTool.name(), "SUCCESS", null);
-                return formatToolCallResult(server, matchedTool.name(), result);
+                return mcpJsonRpcClient.formatToolCallResult(server, matchedTool.name(), result);
             } catch (Exception exception) {
                 recordAgentMcpToolCall(server, effectiveRequestedTool, "ERROR", resolveErrorMessage(exception));
                 return "status=ERROR\nserver=" + server.name() + "\ntool=" + effectiveRequestedTool + "\nmessage=" + resolveErrorMessage(exception);
@@ -216,268 +212,23 @@ public class McpServerAdminService {
     }
 
     String normalizeRequestedToolName(String toolName) {
-        String normalized = toolName == null ? "" : toolName.trim();
-        int toolMarkerIndex = normalized.indexOf("tool=");
-        if (toolMarkerIndex >= 0) {
-            String suffix = normalized.substring(toolMarkerIndex + "tool=".length()).trim();
-            int endIndex = suffix.indexOf(' ');
-            normalized = endIndex > 0 ? suffix.substring(0, endIndex) : suffix;
-        }
-        normalized = normalized.replace('。', '.').replace('．', '.');
-        if (normalized.startsWith("\"") && normalized.endsWith("\"") && normalized.length() > 1) {
-            normalized = normalized.substring(1, normalized.length() - 1);
-        }
-        return normalized.trim();
+        return mcpToolMatcher.normalizeRequestedToolName(toolName);
     }
 
     McpServerToolItem resolveRequestedTool(String requestedTool, List<McpServerToolItem> tools) {
-        if (tools == null || tools.isEmpty()) {
-            return null;
-        }
-        String normalizedRequested = normalizeToolComparable(requestedTool);
-        for (McpServerToolItem tool : tools) {
-            if (tool == null || !StringUtils.hasText(tool.name())) {
-                continue;
-            }
-            if (requestedTool.equals(tool.name()) || requestedTool.equalsIgnoreCase(tool.name())) {
-                return tool;
-            }
-            String normalizedToolName = normalizeToolComparable(tool.name());
-            if (StringUtils.hasText(normalizedRequested)
-                    && (normalizedRequested.equals(normalizedToolName)
-                    || normalizedRequested.contains(normalizedToolName)
-                    || normalizedToolName.contains(normalizedRequested))) {
-                return tool;
-            }
-        }
-        if (looksLikeWeatherToolRequest(requestedTool)) {
-            for (McpServerToolItem tool : tools) {
-                String combined = normalizeToolComparable(tool.name() + " " + nullToEmpty(tool.description()));
-                if (combined.contains("weather") || combined.contains("天气")) {
-                    return tool;
-                }
-            }
-        }
-        return tools.size() == 1 ? tools.get(0) : null;
-    }
-
-    private String normalizeToolComparable(String value) {
-        if (!StringUtils.hasText(value)) {
-            return "";
-        }
-        return value.trim()
-                .toLowerCase()
-                .replaceAll("[\\s_\\-./:：\"'`，,。()（）\\[\\]【】]+", "");
-    }
-
-    private boolean looksLikeWeatherToolRequest(String requestedTool) {
-        String normalized = normalizeToolComparable(requestedTool);
-        return normalized.contains("weather") || normalized.contains("天气") || normalized.contains("temperature");
+        return mcpToolMatcher.resolveRequestedTool(requestedTool, tools);
     }
 
     private McpServerTestResponse doTest(McpServerItem item, LocalDateTime checkedAt) throws Exception {
-        if (!TRANSPORT_STREAMABLE_HTTP.equals(item.transportType())) {
-            throw new IllegalArgumentException("当前仅支持 Streamable HTTP 类型的 MCP 服务");
-        }
-        URI uri = URI.create(item.baseUrl());
-        HttpClient client = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofMillis(item.connectTimeoutMs()))
-                .build();
-
-        JsonNode initializeResult = sendJsonRpcRequest(client, uri, item.headers(), item.connectTimeoutMs(),
-                "initialize",
-                Map.of(
-                        "protocolVersion", "2025-03-26",
-                        "capabilities", Map.of(),
-                        "clientInfo", Map.of("name", "aihos-admin", "version", "1.0.0")
-                ));
-
-        sendJsonRpcNotification(client, uri, item.headers(), item.connectTimeoutMs(),
-                "notifications/initialized", Map.of());
-
-        JsonNode toolsListResult = sendJsonRpcRequest(client, uri, item.headers(), item.connectTimeoutMs(),
-                "tools/list", Map.of());
-
-        JsonNode serverInfo = initializeResult == null ? null : initializeResult.get("serverInfo");
-        String serverName = textValue(serverInfo, "name");
-        String serverVersion = textValue(serverInfo, "version");
-        List<McpServerToolItem> tools = extractTools(toolsListResult);
-        String message = tools.isEmpty()
-                ? "连接成功，但当前服务没有返回可用工具"
-                : "连接成功，已读取到 " + tools.size() + " 个工具";
-        return new McpServerTestResponse(true, item.transportType(), serverName, serverVersion, tools.size(), tools, message, checkedAt);
+        return mcpJsonRpcClient.testServer(item, checkedAt);
     }
 
     private List<McpServerToolItem> fetchTools(McpServerItem item) throws Exception {
-        HttpClient client = buildClient(item);
-        URI uri = URI.create(item.baseUrl());
-        initializeMcpSession(client, uri, item);
-        JsonNode toolsListResult = sendJsonRpcRequest(client, uri, item.headers(), item.connectTimeoutMs(), "tools/list", Map.of());
-        return extractTools(toolsListResult);
+        return mcpJsonRpcClient.fetchTools(item);
     }
 
-    private JsonNode callTool(McpServerItem item, String toolName, Map<String, Object> arguments) throws Exception {
-        HttpClient client = buildClient(item);
-        URI uri = URI.create(item.baseUrl());
-        initializeMcpSession(client, uri, item);
-        return sendJsonRpcRequest(client, uri, item.headers(), item.connectTimeoutMs(),
-                "tools/call",
-                Map.of(
-                        "name", toolName,
-                        "arguments", arguments == null ? Map.of() : arguments
-                ));
-    }
-
-    private HttpClient buildClient(McpServerItem item) {
-        return HttpClient.newBuilder()
-                .connectTimeout(Duration.ofMillis(item.connectTimeoutMs()))
-                .build();
-    }
-
-    private void initializeMcpSession(HttpClient client, URI uri, McpServerItem item) throws Exception {
-        sendJsonRpcRequest(client, uri, item.headers(), item.connectTimeoutMs(),
-                "initialize",
-                Map.of(
-                        "protocolVersion", "2025-03-26",
-                        "capabilities", Map.of(),
-                        "clientInfo", Map.of("name", "aihos-agent-runtime", "version", "1.0.0")
-                ));
-        sendJsonRpcNotification(client, uri, item.headers(), item.connectTimeoutMs(),
-                "notifications/initialized", Map.of());
-    }
-
-    private Map<String, Object> parseToolArguments(String argumentsJson) {
-        if (!StringUtils.hasText(argumentsJson)) {
-            return Map.of();
-        }
-        try {
-            JsonNode node = objectMapper.readTree(argumentsJson);
-            if (node == null || node.isNull()) {
-                return Map.of();
-            }
-            if (!node.isObject()) {
-                throw new IllegalArgumentException("MCP 工具参数必须是 JSON object");
-            }
-            return objectMapper.convertValue(node, new TypeReference<Map<String, Object>>() {
-            });
-        } catch (Exception exception) {
-            throw new IllegalArgumentException("MCP 工具参数不是合法 JSON：" + exception.getMessage(), exception);
-        }
-    }
-
-    private String formatToolCallResult(McpServerItem server, String toolName, JsonNode result) {
-        if (result == null) {
-            return "status=SUCCESS\nserver=" + server.name() + "\ntool=" + toolName + "\nmessage=工具调用成功但无返回内容";
-        }
-        JsonNode content = result.get("content");
-        if (content != null && content.isArray()) {
-            List<String> texts = new ArrayList<>();
-            for (JsonNode item : content) {
-                String text = textValue(item, "text");
-                if (StringUtils.hasText(text)) {
-                    texts.add(text);
-                }
-            }
-            if (!texts.isEmpty()) {
-                return String.join("\n", texts);
-            }
-        }
-        return result.toString();
-    }
-
-    private JsonNode sendJsonRpcRequest(HttpClient client,
-                                        URI uri,
-                                        List<McpServerHeaderItem> headers,
-                                        int timeoutMs,
-                                        String method,
-                                        Map<String, Object> params) throws Exception {
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("jsonrpc", "2.0");
-        payload.put("id", UUID.randomUUID().toString());
-        payload.put("method", method);
-        payload.put("params", params);
-        HttpRequest request = buildBaseRequest(uri, headers, timeoutMs)
-                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload), StandardCharsets.UTF_8))
-                .build();
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-        if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "MCP 服务返回 HTTP " + response.statusCode());
-        }
-        JsonNode root = parseJsonRpcResponse(response.body());
-        if (root.hasNonNull("error")) {
-            JsonNode errorNode = root.get("error");
-            throw new IllegalStateException(textValue(errorNode, "message"));
-        }
-        return root.get("result");
-    }
-
-    private void sendJsonRpcNotification(HttpClient client,
-                                         URI uri,
-                                         List<McpServerHeaderItem> headers,
-                                         int timeoutMs,
-                                         String method,
-                                         Map<String, Object> params) throws Exception {
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("jsonrpc", "2.0");
-        payload.put("method", method);
-        payload.put("params", params);
-        HttpRequest request = buildBaseRequest(uri, headers, timeoutMs)
-                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload), StandardCharsets.UTF_8))
-                .build();
-        client.send(request, HttpResponse.BodyHandlers.discarding());
-    }
-
-    private HttpRequest.Builder buildBaseRequest(URI uri,
-                                                 List<McpServerHeaderItem> headers,
-                                                 int timeoutMs) {
-        HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
-                .timeout(Duration.ofMillis(timeoutMs))
-                .header("Content-Type", "application/json")
-                .header("Accept", "application/json, text/event-stream");
-        for (McpServerHeaderItem header : headers) {
-            if (header == null || !StringUtils.hasText(header.key()) || header.value() == null) {
-                continue;
-            }
-            builder.header(header.key().trim(), header.value());
-        }
-        return builder;
-    }
-
-    private List<McpServerToolItem> extractTools(JsonNode toolsListResult) {
-        JsonNode toolsNode = toolsListResult == null ? null : toolsListResult.get("tools");
-        if (toolsNode == null || !toolsNode.isArray()) {
-            return List.of();
-        }
-        List<McpServerToolItem> tools = new ArrayList<>();
-        for (JsonNode tool : toolsNode) {
-            tools.add(new McpServerToolItem(
-                    textValue(tool, "name"),
-                    textValue(tool, "description"),
-                    tool.hasNonNull("inputSchema") ? tool.get("inputSchema").toString() : null
-            ));
-        }
-        return tools;
-    }
-
-    private JsonNode parseJsonRpcResponse(String body) throws Exception {
-        if (!StringUtils.hasText(body)) {
-            throw new IllegalStateException("MCP 服务返回空响应");
-        }
-        String trimmed = body.trim();
-        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-            return objectMapper.readTree(trimmed);
-        }
-        for (String line : trimmed.split("\\R")) {
-            String normalized = line.trim();
-            if (!normalized.startsWith("data:")) {
-                continue;
-            }
-            String data = normalized.substring("data:".length()).trim();
-            if (StringUtils.hasText(data) && !"[DONE]".equalsIgnoreCase(data)) {
-                return objectMapper.readTree(data);
-            }
-        }
-        throw new IllegalStateException("MCP 服务返回内容不是 JSON-RPC 响应");
+    private com.fasterxml.jackson.databind.JsonNode callTool(McpServerItem item, String toolName, Map<String, Object> arguments) throws Exception {
+        return mcpJsonRpcClient.callTool(item, toolName, arguments);
     }
 
     private void persistTestStatus(Long id,
@@ -585,13 +336,6 @@ public class McpServerAdminService {
             return exception.getMessage();
         }
         return exception.getClass().getSimpleName();
-    }
-
-    private String textValue(JsonNode node, String fieldName) {
-        if (node == null || !node.hasNonNull(fieldName)) {
-            return null;
-        }
-        return node.get(fieldName).asText();
     }
 
     private String truncate(String value, int maxLength) {

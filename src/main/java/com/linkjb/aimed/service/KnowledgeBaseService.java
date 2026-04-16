@@ -368,6 +368,13 @@ public class KnowledgeBaseService {
         );
     }
 
+    /**
+     * metadata 同步链统一覆盖两类入口：
+     * 1. 管理员在知识运营页做批量回填。
+     * 2. 管理员在知识详情页做 metadata-only 保存。
+     *
+     * 两条链最终都必须同时刷新文件状态表、chunk metadata 和内存镜像，避免“详情已更新但检索仍是旧 metadata”。
+     */
     private List<KnowledgeFileStatus> resolveBackfillTargets(List<String> hashes) {
         List<KnowledgeFileStatus> allStatuses = knowledgeFileStatusService.listAll();
         if (hashes == null || hashes.isEmpty()) {
@@ -384,10 +391,19 @@ public class KnowledgeBaseService {
     }
 
     private void applyMetadataPlan(KnowledgeFileStatus status, KnowledgeFileMetadata metadata) {
+        // metadata 回填和单文件 metadata 保存最终都走同一条落库路径，避免形成两套规则。
         applyKnowledgeMetadata(status, metadata);
     }
 
     private void applyKnowledgeMetadata(KnowledgeFileStatus status, KnowledgeFileMetadata metadata) {
+        // metadata-only 保存不会重建正文和 embedding；这里只负责同步文件状态、chunk metadata 和内存中的记录镜像。
+        applyMetadataToStatus(status, metadata);
+        persistMetadataToChunks(status);
+        refreshInMemoryMetadata(status);
+        refreshSearchableEmbeddings(status);
+    }
+
+    private void applyMetadataToStatus(KnowledgeFileStatus status, KnowledgeFileMetadata metadata) {
         status.setDocType(metadata.docType());
         status.setTitle(metadata.title());
         status.setDepartment(metadata.department());
@@ -398,6 +414,9 @@ public class KnowledgeBaseService {
         status.setSourcePriority(metadata.sourcePriority());
         status.setKeywords(metadata.keywords());
         knowledgeFileStatusService.saveOrUpdate(status);
+    }
+
+    private void persistMetadataToChunks(KnowledgeFileStatus status) {
         knowledgeChunkIndexService.updateMetadataByHash(
                 status.getHash(),
                 status.getProcessingStatus(),
@@ -411,7 +430,9 @@ public class KnowledgeBaseService {
                 status.getSourcePriority(),
                 status.getKeywords()
         );
+    }
 
+    private void refreshInMemoryMetadata(KnowledgeFileStatus status) {
         knowledgeRecords.computeIfPresent(status.getHash(), (ignored, existing) -> new KnowledgeDocumentRecord(
                 existing.fileName(),
                 existing.originalFilename(),
@@ -440,7 +461,9 @@ public class KnowledgeBaseService {
                 existing.chunks(),
                 existing.storagePath()
         ));
+    }
 
+    private void refreshSearchableEmbeddings(KnowledgeFileStatus status) {
         if (!isSearchableStatus(status.getProcessingStatus())) {
             return;
         }
@@ -631,6 +654,10 @@ public class KnowledgeBaseService {
         removeKnowledgeRecord(hash);
     }
 
+    /**
+     * 聊天附件增强只对当前轮对话生效，不写入长期知识库。
+     * 这里把附件解析成临时上下文，再统一挂到 `[用户问题]` 前面，方便 prompt 侧识别“材料”和“真实问题”的边界。
+     */
     public String buildChatMessageWithAttachments(String userMessage, MultipartFile[] files) throws IOException {
         String attachmentContext = buildChatAttachmentTextContext(files);
         if (!StringUtils.hasText(attachmentContext)) {
@@ -646,35 +673,7 @@ public class KnowledgeBaseService {
             return "";
         }
 
-        List<ChatAttachmentContent> attachmentContents = new ArrayList<>();
-        int remainingCharacters = MAX_TOTAL_CHAT_ATTACHMENT_CHARACTERS;
-
-        for (MultipartFile file : files) {
-            if (file == null || file.isEmpty()) {
-                continue;
-            }
-
-            String originalFilename = StringUtils.hasText(file.getOriginalFilename()) ? file.getOriginalFilename() : "unnamed";
-            String extension = getExtension(originalFilename);
-            if (!CHAT_ATTACHMENT_EXTENSIONS.contains(extension)) {
-                throw new IOException("聊天附件暂不支持该格式: " + originalFilename);
-            }
-            if (IMAGE_EXTENSIONS.contains(extension)) {
-                continue;
-            }
-
-            ParsedKnowledge parsedKnowledge = parseMultipartFile(file, originalFilename, extension);
-            String text = parsedKnowledge.document().text();
-            int currentLimit = Math.min(MAX_SINGLE_CHAT_ATTACHMENT_CHARACTERS, remainingCharacters);
-            if (currentLimit <= 0) {
-                break;
-            }
-
-            boolean truncated = text.length() > currentLimit;
-            String boundedText = truncated ? text.substring(0, currentLimit) : text;
-            attachmentContents.add(new ChatAttachmentContent(originalFilename, boundedText, truncated));
-            remainingCharacters -= boundedText.length();
-        }
+        List<ChatAttachmentContent> attachmentContents = collectChatAttachmentContents(files);
 
         if (attachmentContents.isEmpty()) {
             return "";
@@ -710,11 +709,7 @@ public class KnowledgeBaseService {
                 continue;
             }
             String originalFilename = StringUtils.hasText(file.getOriginalFilename()) ? file.getOriginalFilename() : "unnamed";
-            //获取格式后缀名
-            String extension = getExtension(originalFilename);
-            if (!CHAT_ATTACHMENT_EXTENSIONS.contains(extension)) {
-                throw new IOException("聊天附件暂不支持该格式: " + originalFilename);
-            }
+            String extension = getChatAttachmentExtension(originalFilename);
             if (IMAGE_EXTENSIONS.contains(extension)) {
                 return true;
             }
@@ -744,11 +739,46 @@ public class KnowledgeBaseService {
             if (totalBytes > MAX_TOTAL_CHAT_ATTACHMENT_BYTES) {
                 throw new IOException("聊天附件总大小不能超过 2MB");
             }
-            String extension = getExtension(originalFilename);
-            if (!CHAT_ATTACHMENT_EXTENSIONS.contains(extension)) {
-                throw new IOException("聊天附件暂不支持该格式: " + originalFilename);
-            }
+            getChatAttachmentExtension(originalFilename);
         }
+    }
+
+    private List<ChatAttachmentContent> collectChatAttachmentContents(MultipartFile[] files) throws IOException {
+        List<ChatAttachmentContent> attachmentContents = new ArrayList<>();
+        int remainingCharacters = MAX_TOTAL_CHAT_ATTACHMENT_CHARACTERS;
+
+        for (MultipartFile file : files) {
+            if (file == null || file.isEmpty()) {
+                continue;
+            }
+
+            String originalFilename = StringUtils.hasText(file.getOriginalFilename()) ? file.getOriginalFilename() : "unnamed";
+            String extension = getChatAttachmentExtension(originalFilename);
+            if (IMAGE_EXTENSIONS.contains(extension)) {
+                continue;
+            }
+
+            ParsedKnowledge parsedKnowledge = parseMultipartFile(file, originalFilename, extension);
+            String text = parsedKnowledge.document().text();
+            int currentLimit = Math.min(MAX_SINGLE_CHAT_ATTACHMENT_CHARACTERS, remainingCharacters);
+            if (currentLimit <= 0) {
+                break;
+            }
+
+            boolean truncated = text.length() > currentLimit;
+            String boundedText = truncated ? text.substring(0, currentLimit) : text;
+            attachmentContents.add(new ChatAttachmentContent(originalFilename, boundedText, truncated));
+            remainingCharacters -= boundedText.length();
+        }
+        return attachmentContents;
+    }
+
+    private String getChatAttachmentExtension(String originalFilename) throws IOException {
+        String extension = getExtension(originalFilename);
+        if (!CHAT_ATTACHMENT_EXTENSIONS.contains(extension)) {
+            throw new IOException("聊天附件暂不支持该格式: " + originalFilename);
+        }
+        return extension;
     }
 
     public boolean isImageAttachment(MultipartFile file) {

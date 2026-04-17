@@ -2,7 +2,7 @@ package com.linkjb.aimed.service;
 
 import com.linkjb.aimed.entity.DeptInfo;
 import com.linkjb.aimed.mapper.DeptInfoMapper;
-import com.linkjb.aimed.service.Impl.DeptInfoServiceImpl;
+import com.linkjb.aimed.service.impl.DeptInfoServiceImpl;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;

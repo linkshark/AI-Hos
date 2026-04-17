@@ -1,15 +1,15 @@
 package com.linkjb.aimed.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.linkjb.aimed.bean.ChatForm;
-import com.linkjb.aimed.bean.PagedResponse;
-import com.linkjb.aimed.bean.chat.ChatHistoryDetailResponse;
-import com.linkjb.aimed.bean.chat.ChatHistoryItemResponse;
-import com.linkjb.aimed.bean.chat.ChatSessionCreateResponse;
-import com.linkjb.aimed.bean.chat.ChatHistoryPinRequest;
-import com.linkjb.aimed.bean.chat.ChatHistoryRenameRequest;
-import com.linkjb.aimed.bean.ChatProviderConfigResponse;
-import com.linkjb.aimed.bean.chat.ChatStreamMetadata;
+import com.linkjb.aimed.entity.dto.request.ChatForm;
+import com.linkjb.aimed.entity.dto.response.PagedResponse;
+import com.linkjb.aimed.entity.dto.response.chat.ChatHistoryDetailResponse;
+import com.linkjb.aimed.entity.dto.response.chat.ChatHistoryItemResponse;
+import com.linkjb.aimed.entity.dto.response.chat.ChatSessionCreateResponse;
+import com.linkjb.aimed.entity.dto.request.chat.ChatHistoryPinRequest;
+import com.linkjb.aimed.entity.dto.request.chat.ChatHistoryRenameRequest;
+import com.linkjb.aimed.entity.dto.response.ChatProviderConfigResponse;
+import com.linkjb.aimed.entity.dto.response.chat.ChatStreamMetadata;
 import com.linkjb.aimed.config.skywalk.TraceIdProvider;
 import com.linkjb.aimed.security.AuthenticatedUser;
 import com.linkjb.aimed.service.ChatSessionUserBindingService;

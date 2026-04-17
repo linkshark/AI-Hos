@@ -1,7 +1,9 @@
 package com.linkjb.aimed.config.chatmodel;
 
 import dev.langchain4j.http.client.jdk.JdkHttpClient;
+import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -11,6 +13,30 @@ import java.time.Duration;
 
 @Configuration
 public class OnlineChatModelConfig {
+
+    @Bean(name = "onlineFastChatModel")
+    public ChatModel onlineFastChatModel(
+            @Value("${app.online-chat.base-url:https://dashscope.aliyuncs.com/compatible-mode/v1}") String baseUrl,
+            @Value("${app.online-chat.api-key:}") String apiKey,
+            @Value("${app.online-chat.fast.model-name:${ONLINE_CHAT_FAST_MODEL_NAME:qwen-plus}}") String modelName,
+            @Value("${app.online-chat.temperature:0.9}") Double temperature,
+            @Value("${app.online-chat.timeout:PT90S}") Duration timeout,
+            @Value("${app.online-chat.log-requests:false}") Boolean logRequests,
+            @Value("${app.online-chat.log-responses:false}") Boolean logResponses) {
+        return buildChatModel(baseUrl, apiKey, modelName, temperature, timeout, logRequests, logResponses);
+    }
+
+    @Bean(name = "onlineDeepChatModel")
+    public ChatModel onlineDeepChatModel(
+            @Value("${app.online-chat.base-url:https://dashscope.aliyuncs.com/compatible-mode/v1}") String baseUrl,
+            @Value("${app.online-chat.api-key:}") String apiKey,
+            @Value("${app.online-chat.deep.model-name:${ONLINE_CHAT_MODEL_NAME:qwen3.6-plus}}") String modelName,
+            @Value("${app.online-chat.temperature:0.9}") Double temperature,
+            @Value("${app.online-chat.timeout:PT90S}") Duration timeout,
+            @Value("${app.online-chat.log-requests:false}") Boolean logRequests,
+            @Value("${app.online-chat.log-responses:false}") Boolean logResponses) {
+        return buildChatModel(baseUrl, apiKey, modelName, temperature, timeout, logRequests, logResponses);
+    }
 
     @Bean(name = "onlineFastStreamingChatModel")
     public StreamingChatModel onlineFastStreamingChatModel(
@@ -44,6 +70,25 @@ public class OnlineChatModelConfig {
                                                    Boolean logRequests,
                                                    Boolean logResponses) {
         return OpenAiStreamingChatModel.builder()
+                .baseUrl(baseUrl)
+                .apiKey(apiKey)
+                .modelName(modelName)
+                .httpClientBuilder(JdkHttpClient.builder())
+                .temperature(temperature)
+                .timeout(timeout)
+                .logRequests(logRequests)
+                .logResponses(logResponses)
+                .build();
+    }
+
+    private ChatModel buildChatModel(String baseUrl,
+                                     String apiKey,
+                                     String modelName,
+                                     Double temperature,
+                                     Duration timeout,
+                                     Boolean logRequests,
+                                     Boolean logResponses) {
+        return OpenAiChatModel.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
                 .modelName(modelName)

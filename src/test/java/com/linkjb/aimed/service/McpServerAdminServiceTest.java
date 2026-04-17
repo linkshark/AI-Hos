@@ -1,7 +1,7 @@
 package com.linkjb.aimed.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.linkjb.aimed.bean.mcp.McpServerToolItem;
+import com.linkjb.aimed.entity.vo.mcp.McpServerToolItem;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

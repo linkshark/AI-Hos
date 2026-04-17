@@ -223,4 +223,56 @@ public class VisionChatService {
     private long durationMs(long startedAt) {
         return (System.nanoTime() - startedAt) / 1_000_000;
     }
+
+    public static void main(String[] args) {
+       String s ="select \n" +
+               "      CAST(@row_number := @row_number + 1 AS CHAR) AS hc,\n" +
+               "    xmmc,\n" +
+               "    je,\n" +
+               "    dw,\n" +
+               "    sl,\n" +
+               "    bz\n" +
+               "FROM (\n" +
+               "    SELECT\n" +
+               "    CONCAT('(',d.insure_grade,')',d.drug_name) AS xmmc,\n" +
+               "    ( round( round( price, 4 ) * round( sum( qty ), 4 ), 2 ) ) AS je,\n" +
+               "    d.exe_unit AS dw,\n" +
+               "    CONVERT ( sum( qty ), DECIMAL ( 12, 2 ) ) AS sl,\n" +
+               "    CONCAT((case when insure_scale=0 then '甲' when insure_scale>0 and insure_scale<1 then '乙'  else '丙' end),'/',CONCAT(ifnull( CONVERT ( d.insure_scale * 100, DECIMAL ( 12, 2 ) ), 1 ),'%')) as bz,\n" +
+               "    income_id as hc\n" +
+               "    FROM\n" +
+               "    emr.cd_prescription_detail d\n" +
+               "    INNER JOIN emr.cd_prescription p ON p.prescription_id = d.prescription_id\n" +
+               "    WHERE  p.del = 1 \n" +
+               "    AND p.cash_id =  #{cashId}\n" +
+               "    GROUP BY\n" +
+               "    d.drug_factory_id,\n" +
+               "    store_stock_id,\n" +
+               "    d.prescription_id \n" +
+               "    having je>0\n" +
+               "\n" +
+               "    UNION ALL\n" +
+               "\n" +
+               "    SELECT\n" +
+               "    CONCAT('(',c.insure_grade,')',c.charge_item_name) AS xmmc,\n" +
+               "    ( round( round( price, 4 ) * round( sum( qty ), 4 ), 2 ) ) AS je,\n" +
+               "    c.charge_item_unit AS dw,\n" +
+               "    CONVERT ( sum( qty ), DECIMAL ( 12, 2 ) ) AS sl,\n" +
+               "    CONCAT((case when insure_scale=0 then '甲' when insure_scale>0 and insure_scale<1 then '乙'  else '丙' end),'/',CONCAT(ifnull( CONVERT ( c.insure_scale * 100, DECIMAL ( 12, 2 ) ), 1 ),'%') ) as bz,\n" +
+               "    income_id as hc\n" +
+               "    FROM\n" +
+               "    emr.cd_charge c\n" +
+               "    LEFT JOIN (select insure_order_code,charge_item_id from sis.si_order_dict2his b where b.dict_book_id='402' and  b.mapp_end_time is null) s on c.charge_item_id=s.charge_item_id \n" +
+               "    WHERE\n" +
+               "    IFNULL(free_flag,0) = 0 \n" +
+               "    AND cash_id = #{cashId}\n" +
+               "    GROUP BY\n" +
+               "    c.charge_item_id,\n" +
+               "    request_id\n" +
+               "    having je>0\n" +
+               "    ) AS combined_result\n" +
+               "CROSS JOIN (SELECT @row_number := 0) AS init\n" +
+               "ORDER BY hc;\n";
+       System.out.println(s);
+    }
 }

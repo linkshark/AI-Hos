@@ -39,6 +39,7 @@ src/main/resources/application-local.properties
 config/application-local.yml
 config/application-online.yml
 data/
+tmp/
 docs/
 .secrets/
 .skywalking/

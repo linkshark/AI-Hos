@@ -2,7 +2,7 @@ package com.linkjb.aimed.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.linkjb.aimed.bean.KnowledgeChunkInfo;
+import com.linkjb.aimed.entity.vo.KnowledgeChunkInfo;
 import com.linkjb.aimed.entity.KnowledgeChunkIndex;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.document.DocumentSplitter;

@@ -1,0 +1,11 @@
+/**
+ * 聊天展示层 DTO。
+ *
+ * <p>这里专门承接“用户可见聊天”的数据结构，包括：
+ * 历史摘要、历史详情、附件卡片、前端可恢复的消息形态，以及流式回答尾包里的检索元数据。
+ *
+ * <p>这些对象刻意和 LangChain4j 的原始 memory message 解耦，
+ * 目的是保证：
+ * 历史恢复看到的是用户实际看到的提问和回答，而不是模型内部 prompt 或工具上下文。
+ */
+package com.linkjb.aimed.entity.dto.response.chat;

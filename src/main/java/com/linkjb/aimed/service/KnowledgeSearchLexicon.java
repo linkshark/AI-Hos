@@ -6,6 +6,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 final class KnowledgeSearchLexicon {
 
@@ -20,9 +22,22 @@ final class KnowledgeSearchLexicon {
     );
     private static final List<String> COMMON_MEDICAL_TERMS = List.of(
             "肺炎支原体肺炎", "慢性阻塞性肺疾病", "慢性肾脏病", "高尿酸血症",
+            "普通感冒", "感冒", "上呼吸道感染", "急性上呼吸道感染",
             "肝癌", "肺癌", "胃癌", "肠癌", "乳腺癌", "糖尿病", "高血压",
-            "痛风", "肥胖症", "流感", "诺如病毒", "新型冠状病毒感染"
+            "痛风", "肥胖症", "流感", "诺如病毒", "新型冠状病毒感染",
+            "发热", "发烧", "鼻塞", "咳嗽", "咽痛", "流涕", "腹泻", "呕吐"
     );
+    private static final Set<String> REWRITE_NOISE_TOKENS = Set.of(
+            "普通人", "没有别的症状", "就这些", "先这样", "我现在", "我叫", "好的", "你好", "您好"
+    );
+    private static final List<String> STRUCTURED_HINT_PATTERNS = List.of(
+            "\\d{1,3}岁", "男", "女", "\\d+(?:\\.\\d+)?℃", "\\d+天", "\\d+周"
+    );
+    private static final List<String> MEDICAL_INTENT_TERMS = List.of(
+            "吃什么药", "吃点什么药", "用什么药", "怎么用药", "挂什么科", "看什么科",
+            "需要住院", "怎么治疗", "如何治疗", "怎么处理", "怎么办"
+    );
+    private static final Pattern CHINESE_NAME_PATTERN = Pattern.compile("我叫[\\u4e00-\\u9fa5A-Za-z]{2,16}");
 
     private KnowledgeSearchLexicon() {
     }
@@ -196,6 +211,76 @@ final class KnowledgeSearchLexicon {
         return tokens.stream().filter(KnowledgeSearchLexicon::isUsefulQueryToken).toList();
     }
 
+    static List<String> detectMedicalAnchors(String query) {
+        if (!StringUtils.hasText(query)) {
+            return List.of();
+        }
+        String normalized = normalizeSearchQuery(query);
+        Set<String> anchors = new LinkedHashSet<>();
+        extractCoreQueryTokens(normalized).forEach(anchors::add);
+        for (String term : COMMON_MEDICAL_TERMS) {
+            if (normalized.contains(term)) {
+                anchors.add(term);
+            }
+        }
+        return anchors.stream().filter(StringUtils::hasText).toList();
+    }
+
+    static List<String> extractMedicalRewriteHints(String query) {
+        if (!StringUtils.hasText(query)) {
+            return List.of();
+        }
+        String normalized = normalizeSearchQuery(query);
+        String stripped = stripRewriteNoise(normalized);
+        Set<String> hints = new LinkedHashSet<>();
+        detectMedicalAnchors(stripped).forEach(hints::add);
+        extractStructuredRewriteHints(normalized).forEach(hints::add);
+        extractIntentRewriteHints(normalized).forEach(hints::add);
+        if (hints.isEmpty()) {
+            for (String token : stripped.split("[\\s,，。；;]+")) {
+                if (isUsefulQueryToken(token)) {
+                    hints.add(token.trim());
+                }
+            }
+        }
+        return hints.stream().filter(StringUtils::hasText).toList();
+    }
+
+    static List<String> extractStructuredRewriteHints(String query) {
+        if (!StringUtils.hasText(query)) {
+            return List.of();
+        }
+        String normalized = normalizeSearchQuery(query);
+        Set<String> hints = new LinkedHashSet<>();
+        for (String regex : STRUCTURED_HINT_PATTERNS) {
+            Matcher matcher = Pattern.compile(regex).matcher(normalized);
+            while (matcher.find()) {
+                hints.add(matcher.group());
+            }
+        }
+        if (normalized.contains("没有别的症状")) {
+            hints.add("无其他症状");
+        }
+        return hints.stream().filter(StringUtils::hasText).toList();
+    }
+
+    static List<String> extractIntentRewriteHints(String query) {
+        if (!StringUtils.hasText(query)) {
+            return List.of();
+        }
+        String normalized = normalizeSearchQuery(query);
+        Set<String> hints = new LinkedHashSet<>();
+        for (String term : MEDICAL_INTENT_TERMS) {
+            if (normalized.contains(term)) {
+                hints.add(term);
+            }
+        }
+        if (normalized.contains("挂号") || normalized.matches(".*挂\\S{0,4}号.*")) {
+            hints.add("挂号");
+        }
+        return hints.stream().filter(StringUtils::hasText).toList();
+    }
+
     private static String removeQueryNoise(String value) {
         if (!StringUtils.hasText(value)) {
             return "";
@@ -204,6 +289,18 @@ final class KnowledgeSearchLexicon {
         for (String noise : QUERY_NOISE_TOKENS) {
             cleaned = cleaned.replace(noise, " ");
         }
+        return cleaned.replaceAll("\\s+", " ").trim();
+    }
+
+    private static String stripRewriteNoise(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        String cleaned = removeQueryNoise(value);
+        for (String noise : REWRITE_NOISE_TOKENS) {
+            cleaned = cleaned.replace(noise, " ");
+        }
+        cleaned = CHINESE_NAME_PATTERN.matcher(cleaned).replaceAll(" ");
         return cleaned.replaceAll("\\s+", " ").trim();
     }
 
@@ -235,7 +332,7 @@ final class KnowledgeSearchLexicon {
             return false;
         }
         String trimmed = value.trim();
-        return trimmed.length() >= 2 && !QUERY_NOISE_TOKENS.contains(trimmed);
+        return trimmed.length() >= 2 && !QUERY_NOISE_TOKENS.contains(trimmed) && !REWRITE_NOISE_TOKENS.contains(trimmed);
     }
 
     private static boolean containsAny(String text, String... terms) {

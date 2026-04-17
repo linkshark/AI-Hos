@@ -9,7 +9,7 @@ import com.mongodb.client.model.Filters;
 import com.mongodb.client.model.Projections;
 import com.mongodb.client.model.UpdateOptions;
 import com.mongodb.client.model.Updates;
-import com.linkjb.aimed.bean.chat.ChatVisibleHistoryDocument;
+import com.linkjb.aimed.entity.document.chat.ChatVisibleHistoryDocument;
 import org.bson.Document;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;

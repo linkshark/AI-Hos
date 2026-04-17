@@ -2,7 +2,7 @@ package com.linkjb.aimed.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.linkjb.aimed.bean.KnowledgeProcessingMessage;
+import com.linkjb.aimed.entity.vo.KnowledgeProcessingMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;

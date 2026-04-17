@@ -22,7 +22,7 @@
             :key="tab.value"
             :class="['admin-tab-button', { active: activeTab === tab.value }]"
             type="button"
-            @click="activeTab = tab.value"
+            @click.stop.prevent="selectTab(tab.value)"
           >
             <strong>{{ tab.label }}</strong>
             <span>{{ tab.description }}</span>
@@ -288,6 +288,10 @@
         </div>
       </section>
 
+      <section v-else-if="activeTab === 'medicalStandard'" class="admin-card admin-panel">
+        <MedicalStandardAdminPanel @audit-refresh="loadAuditLogs(1)" />
+      </section>
+
       <section v-else class="admin-card admin-panel">
         <div class="admin-toolbar">
           <div class="admin-toolbar-copy">
@@ -551,22 +555,25 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import AdminEntryActionButton from '@/components/AdminEntryActionButton.vue'
+import MedicalStandardAdminPanel from '@/components/MedicalStandardAdminPanel.vue'
 import KnowledgeMetadataBackfillPanel from '@/components/KnowledgeMetadataBackfillPanel.vue'
 import KnowledgeRetrievalDiagnosticsPanel from '@/components/KnowledgeRetrievalDiagnosticsPanel.vue'
 import LogoutActionButton from '@/components/LogoutActionButton.vue'
 import { apiClient, authState, isAdmin, logout } from '@/lib/auth'
 
 const router = useRouter()
+const route = useRoute()
 const SKYWALKING_TRACE_BASE = 'http://shenchaoqi.x3322.net:19200/General-Service/Services'
 
 const tabs = [
   { value: 'users', label: '用户管理', description: '账号、角色、状态与医生账号统一处理' },
   { value: 'mcp', label: 'MCP 接入', description: '配置、验证并查看远端 MCP 服务能力' },
   { value: 'knowledge-ops', label: '知识运营', description: '检索字段补齐与召回诊断' },
+  { value: 'medicalStandard', label: '疾病标准', description: '维护疾病概念、别名与症状主诉' },
   { value: 'logs', label: '审计日志', description: '认证、管理与聊天摘要审计' },
 ]
 
@@ -588,6 +595,11 @@ const auditActionOptions = [
   'KNOWLEDGE_METADATA_BACKFILL_PREVIEW',
   'KNOWLEDGE_METADATA_BACKFILL_APPLY',
   'KNOWLEDGE_RETRIEVAL_DIAGNOSE',
+  'MEDICAL_STANDARD_SYMPTOM_MAPPING_SAVE',
+  'MEDICAL_STANDARD_CONCEPT_SAVE',
+  'MEDICAL_STANDARD_ALIAS_SAVE',
+  'MEDICAL_STANDARD_SYMPTOM_MAPPING_DELETE',
+  'MEDICAL_STANDARD_DOC_MAPPING_BACKFILL',
   'MCP_SERVER_CREATE',
   'MCP_SERVER_UPDATE',
   'MCP_SERVER_DELETE',
@@ -650,6 +662,8 @@ const metadataBackfillHashes = computed(() => metadataBackfillHashesText.value
   .filter(Boolean))
 const metadataBackfillScopeCount = computed(() => metadataBackfillHashes.value.length || 1)
 
+const validAdminTabs = new Set(tabs.map((tab) => tab.value))
+
 const mcpForm = reactive({
   name: '',
   transportType: 'STREAMABLE_HTTP',
@@ -665,11 +679,41 @@ onMounted(async () => {
     await router.replace('/')
     return
   }
+  activeTab.value = normalizeAdminTab(route.query.tab)
   await Promise.all([loadUsers(), loadAuditLogs(), loadMcpServers()])
+})
+
+watch(
+  () => route.query.tab,
+  (value) => {
+    const normalized = normalizeAdminTab(value)
+    if (normalized !== activeTab.value) {
+      activeTab.value = normalized
+    }
+  },
+)
+
+watch(activeTab, async (value) => {
+  const normalized = normalizeAdminTab(value)
+  const current = normalizeAdminTab(route.query.tab)
+  if (normalized === current) {
+    return
+  }
+  const nextQuery = { ...route.query }
+  if (normalized === 'users') {
+    delete nextQuery.tab
+  } else {
+    nextQuery.tab = normalized
+  }
+  await router.replace({ path: '/admin', query: nextQuery })
 })
 
 const goToChat = () => {
   router.push('/')
+}
+
+const selectTab = (value) => {
+  activeTab.value = normalizeAdminTab(value)
 }
 
 const goToKnowledge = () => {
@@ -1093,6 +1137,11 @@ const resolveErrorMessage = (error, fallback) => {
   return responseMessage || fallback
 }
 
+const normalizeAdminTab = (value) => {
+  const candidate = Array.isArray(value) ? value[0] : value
+  return validAdminTabs.has(candidate) ? candidate : 'users'
+}
+
 const roleTagClass = (role) => {
   if (role === 'ADMIN') {
     return 'inline-tag-admin'
@@ -1141,6 +1190,11 @@ const auditActionLabel = (actionType) => {
     KNOWLEDGE_METADATA_BACKFILL_PREVIEW: '预览检索字段补齐',
     KNOWLEDGE_METADATA_BACKFILL_APPLY: '执行检索字段补齐',
     KNOWLEDGE_RETRIEVAL_DIAGNOSE: '检索诊断',
+    MEDICAL_STANDARD_SYMPTOM_MAPPING_SAVE: '保存症状主诉映射',
+    MEDICAL_STANDARD_CONCEPT_SAVE: '保存疾病标准字段',
+    MEDICAL_STANDARD_ALIAS_SAVE: '保存疾病别名',
+    MEDICAL_STANDARD_SYMPTOM_MAPPING_DELETE: '删除症状主诉映射',
+    MEDICAL_STANDARD_DOC_MAPPING_BACKFILL: '回填文档疾病映射',
     MCP_SERVER_CREATE: '创建 MCP 服务',
     MCP_SERVER_UPDATE: '更新 MCP 服务',
     MCP_SERVER_DELETE: '删除 MCP 服务',

@@ -1,6 +1,6 @@
 package com.linkjb.aimed.service;
 
-import com.linkjb.aimed.bean.chat.ChatHistoryItemResponse;
+import com.linkjb.aimed.entity.dto.response.chat.ChatHistoryItemResponse;
 import com.linkjb.aimed.entity.ChatSessionOwner;
 import org.junit.jupiter.api.Test;
 

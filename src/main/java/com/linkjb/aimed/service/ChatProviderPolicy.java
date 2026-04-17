@@ -1,6 +1,6 @@
 package com.linkjb.aimed.service;
 
-import com.linkjb.aimed.bean.ChatProviderConfigResponse;
+import com.linkjb.aimed.entity.dto.response.ChatProviderConfigResponse;
 
 import java.util.ArrayList;
 import java.util.List;

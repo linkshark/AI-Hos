@@ -61,7 +61,7 @@
             <span class="admin-role-check">{{ form.adminRequested ? '✓' : '' }}</span>
             <span class="admin-role-copy">
               <strong>管理员权限</strong>
-              <small>需管理员邀请码，注册后权限为管理员</small>
+              <small>需管理员邀请码，注册后权限为管理员(测试期间开放)</small>
             </span>
           </button>
           <el-form-item label="验证码">

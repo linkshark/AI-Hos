@@ -39,7 +39,7 @@ public class MongoChatMemoryStore implements ChatMemoryStore {
 
     @Override
     public List<ChatMessage> getMessages(Object memoryId) {
-        Long normalizedMemoryId = normalizeMemoryId(memoryId);
+         Long normalizedMemoryId = normalizeMemoryId(memoryId);
         if (normalizedMemoryId == null) {
             log.debug("对话记忆获取 memoryId=null size=0");
             return new LinkedList<>();

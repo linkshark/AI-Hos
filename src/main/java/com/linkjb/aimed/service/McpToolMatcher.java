@@ -1,6 +1,6 @@
 package com.linkjb.aimed.service;
 
-import com.linkjb.aimed.bean.mcp.McpServerToolItem;
+import com.linkjb.aimed.entity.vo.mcp.McpServerToolItem;
 import org.springframework.util.StringUtils;
 
 import java.util.List;

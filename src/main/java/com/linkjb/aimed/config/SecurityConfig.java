@@ -1,7 +1,7 @@
 package com.linkjb.aimed.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.linkjb.aimed.bean.ApiErrorResponse;
+import com.linkjb.aimed.entity.dto.response.ApiErrorResponse;
 import com.linkjb.aimed.config.skywalk.RequestTraceFilter;
 import com.linkjb.aimed.security.JwtAuthenticationFilter;
 import jakarta.servlet.DispatcherType;

@@ -1,15 +1,15 @@
 package com.linkjb.aimed.controller;
 
-import com.linkjb.aimed.bean.AuthUserResponse;
-import com.linkjb.aimed.bean.LoginRequest;
-import com.linkjb.aimed.bean.LogoutRequest;
-import com.linkjb.aimed.bean.MessageResponse;
-import com.linkjb.aimed.bean.PasswordResetRequest;
-import com.linkjb.aimed.bean.PasswordResetSendCodeRequest;
-import com.linkjb.aimed.bean.RefreshTokenRequest;
-import com.linkjb.aimed.bean.RegisterRequest;
-import com.linkjb.aimed.bean.RegisterSendCodeRequest;
-import com.linkjb.aimed.bean.TokenPairResponse;
+import com.linkjb.aimed.entity.dto.response.AuthUserResponse;
+import com.linkjb.aimed.entity.dto.request.LoginRequest;
+import com.linkjb.aimed.entity.dto.request.LogoutRequest;
+import com.linkjb.aimed.entity.dto.response.MessageResponse;
+import com.linkjb.aimed.entity.dto.request.PasswordResetRequest;
+import com.linkjb.aimed.entity.dto.request.PasswordResetSendCodeRequest;
+import com.linkjb.aimed.entity.dto.request.RefreshTokenRequest;
+import com.linkjb.aimed.entity.dto.request.RegisterRequest;
+import com.linkjb.aimed.entity.dto.request.RegisterSendCodeRequest;
+import com.linkjb.aimed.entity.dto.response.TokenPairResponse;
 import com.linkjb.aimed.security.AuthenticatedUser;
 import com.linkjb.aimed.service.AuthService;
 import io.swagger.v3.oas.annotations.Operation;

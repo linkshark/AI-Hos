@@ -1,14 +1,14 @@
 package com.linkjb.aimed.service;
 
-import com.linkjb.aimed.bean.AuthUserResponse;
-import com.linkjb.aimed.bean.LoginRequest;
-import com.linkjb.aimed.bean.MessageResponse;
-import com.linkjb.aimed.bean.PasswordResetRequest;
-import com.linkjb.aimed.bean.PasswordResetSendCodeRequest;
-import com.linkjb.aimed.bean.RefreshTokenRequest;
-import com.linkjb.aimed.bean.RegisterRequest;
-import com.linkjb.aimed.bean.RegisterSendCodeRequest;
-import com.linkjb.aimed.bean.TokenPairResponse;
+import com.linkjb.aimed.entity.dto.response.AuthUserResponse;
+import com.linkjb.aimed.entity.dto.request.LoginRequest;
+import com.linkjb.aimed.entity.dto.response.MessageResponse;
+import com.linkjb.aimed.entity.dto.request.PasswordResetRequest;
+import com.linkjb.aimed.entity.dto.request.PasswordResetSendCodeRequest;
+import com.linkjb.aimed.entity.dto.request.RefreshTokenRequest;
+import com.linkjb.aimed.entity.dto.request.RegisterRequest;
+import com.linkjb.aimed.entity.dto.request.RegisterSendCodeRequest;
+import com.linkjb.aimed.entity.dto.response.TokenPairResponse;
 import com.linkjb.aimed.config.AuthProperties;
 import com.linkjb.aimed.entity.AppUser;
 import com.linkjb.aimed.security.AuthenticatedUser;

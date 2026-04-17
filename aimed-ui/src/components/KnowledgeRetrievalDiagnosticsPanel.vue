@@ -55,6 +55,10 @@
 
       <div class="diagnostic-meta-grid">
         <div class="diagnostic-meta-item">
+          <span>原始问题</span>
+          <strong>{{ result.rawQuery || query || '—' }}</strong>
+        </div>
+        <div class="diagnostic-meta-item">
           <span>当前档位</span>
           <strong>{{ profileLabel(result.profile || profile) }}</strong>
         </div>
@@ -63,12 +67,66 @@
           <strong>{{ result.normalizedQuery || '—' }}</strong>
         </div>
         <div class="diagnostic-meta-item">
+          <span>有效检索 Query</span>
+          <strong>{{ result.effectiveQuery || result.normalizedQuery || '—' }}</strong>
+        </div>
+        <div class="diagnostic-meta-item">
           <span>布尔查询</span>
           <strong>{{ result.booleanQuery || '—' }}</strong>
         </div>
         <div class="diagnostic-meta-item">
           <span>耗时</span>
           <strong>{{ result.durationMs || 0 }} ms</strong>
+        </div>
+      </div>
+
+      <div v-if="result.rewriteApplied || result.contextMessagesUsed?.length || result.medicalAnchors?.length" class="diagnostic-rewrite-card">
+        <div class="diagnostic-rules-head">
+          <h3>Query Rewrite</h3>
+          <span>{{ result.rewriteMode || 'NONE' }}</span>
+        </div>
+        <div class="diagnostic-rewrite-grid">
+          <article>
+            <span>改写状态</span>
+            <strong>{{ result.rewriteApplied ? '已生效' : '未改写' }}</strong>
+          </article>
+          <article>
+            <span>医疗锚点</span>
+            <strong>{{ joinList(result.medicalAnchors) }}</strong>
+          </article>
+          <article>
+            <span>上下文消息</span>
+            <strong>{{ joinList(result.contextMessagesUsed) }}</strong>
+          </article>
+        </div>
+      </div>
+
+      <div v-if="result.matchedDiseaseEntities?.length || result.matchedSymptoms?.length || result.matchedChiefComplaints?.length || result.docEntityMatches?.length" class="diagnostic-rules-card">
+        <div class="diagnostic-rules-head">
+          <h3>疾病标准层命中</h3>
+          <span>疾病、症状与主诉锚点</span>
+        </div>
+        <div v-if="result.matchedDiseaseEntities?.length" class="diagnostic-entity-list">
+          <article v-for="item in result.matchedDiseaseEntities" :key="item.conceptCode" class="diagnostic-entity-item">
+            <strong>{{ item.diseaseName || item.englishName || item.standardCode }}</strong>
+            <span>{{ item.standardCode || '未标注编码' }} · {{ item.matchType }}</span>
+          </article>
+        </div>
+        <div v-if="result.matchedSymptoms?.length" class="diagnostic-token-row">
+          <span v-for="token in result.matchedSymptoms" :key="`symptom-${token}`" class="diagnostic-token">
+            症状 {{ token }}
+          </span>
+        </div>
+        <div v-if="result.matchedChiefComplaints?.length" class="diagnostic-token-row">
+          <span v-for="token in result.matchedChiefComplaints" :key="`complaint-${token}`" class="diagnostic-token">
+            主诉 {{ token }}
+          </span>
+        </div>
+        <div v-if="result.docEntityMatches?.length" class="diagnostic-doc-match-list">
+          <article v-for="item in result.docEntityMatches" :key="`${item.knowledgeHash}-${item.conceptCode}`" class="diagnostic-doc-match-item">
+            <strong>{{ item.diseaseTitle || item.standardCode || item.conceptCode }}</strong>
+            <span>{{ item.knowledgeHash }} · {{ item.matchSource }} · {{ formatScore(item.confidence) }}</span>
+          </article>
         </div>
       </div>
 
@@ -183,6 +241,8 @@ const profileLabel = (value) => String(value).toUpperCase() === 'LOCAL'
 const hitMeta = (item) => [item.retrievalType, item.doctorName, item.department, item.version]
   .filter(Boolean)
   .join(' · ')
+
+const joinList = (items) => Array.isArray(items) && items.length ? items.join(' · ') : '—'
 </script>
 
 <style scoped>
@@ -364,6 +424,15 @@ const hitMeta = (item) => [item.retrievalType, item.doctorName, item.department,
   background: rgba(248, 252, 252, 0.96);
 }
 
+.diagnostic-rewrite-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(42, 112, 114, 0.12);
+  border-radius: 20px;
+  background: rgba(248, 252, 252, 0.96);
+}
+
 .diagnostic-rules-head {
   display: flex;
   justify-content: space-between;
@@ -409,6 +478,41 @@ const hitMeta = (item) => [item.retrievalType, item.doctorName, item.department,
   font-size: 12px;
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+.diagnostic-rewrite-grid,
+.diagnostic-entity-list,
+.diagnostic-doc-match-list {
+  display: grid;
+  gap: 10px;
+}
+
+.diagnostic-rewrite-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.diagnostic-rewrite-grid article,
+.diagnostic-entity-item,
+.diagnostic-doc-match-item {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(239, 248, 248, 0.9);
+}
+
+.diagnostic-rewrite-grid span,
+.diagnostic-entity-item span,
+.diagnostic-doc-match-item span {
+  color: #67878d;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.diagnostic-entity-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .diagnostic-columns {
@@ -505,7 +609,9 @@ const hitMeta = (item) => [item.retrievalType, item.doctorName, item.department,
   .diagnostic-summary-grid,
   .diagnostic-meta-grid,
   .diagnostic-columns,
-  .diagnostic-rule-list {
+  .diagnostic-rule-list,
+  .diagnostic-rewrite-grid,
+  .diagnostic-entity-list {
     grid-template-columns: 1fr;
   }
 }

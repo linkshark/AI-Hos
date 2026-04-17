@@ -1,11 +1,14 @@
 package com.linkjb.aimed.service;
 
-import com.linkjb.aimed.bean.chat.ChatStreamMetadata;
-import com.linkjb.aimed.bean.KnowledgeCitationItem;
-import com.linkjb.aimed.bean.KnowledgeRetrievalDiagnosticHit;
-import com.linkjb.aimed.bean.KnowledgeRetrievalDiagnosticResponse;
-import com.linkjb.aimed.bean.KnowledgeRetrievalScoreBreakdown;
-import com.linkjb.aimed.bean.KnowledgeRetrievalScoringRule;
+import com.linkjb.aimed.entity.dto.response.chat.ChatStreamMetadata;
+import com.linkjb.aimed.entity.vo.KnowledgeCitationItem;
+import com.linkjb.aimed.entity.dto.response.knowledge.retrieval.KnowledgeRetrievalDocumentEntityMatch;
+import com.linkjb.aimed.entity.dto.response.knowledge.retrieval.KnowledgeRetrievalDiagnosticHit;
+import com.linkjb.aimed.entity.dto.response.knowledge.retrieval.KnowledgeRetrievalDiagnosticResponse;
+import com.linkjb.aimed.entity.dto.response.knowledge.retrieval.KnowledgeRetrievalMatchedDiseaseEntity;
+import com.linkjb.aimed.entity.dto.response.knowledge.retrieval.KnowledgeRetrievalQueryRewriteInfo;
+import com.linkjb.aimed.entity.dto.response.knowledge.retrieval.KnowledgeRetrievalScoreBreakdown;
+import com.linkjb.aimed.entity.dto.response.knowledge.retrieval.KnowledgeRetrievalScoringRule;
 import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
@@ -18,6 +21,7 @@ import dev.langchain4j.store.embedding.EmbeddingStore;
 import dev.langchain4j.store.embedding.filter.Filter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -29,15 +33,20 @@ import org.springframework.util.StringUtils;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.LocalDateTime;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 /**
@@ -54,6 +63,8 @@ public class HybridKnowledgeRetrieverService {
 
     private static final Logger log = LoggerFactory.getLogger(HybridKnowledgeRetrieverService.class);
     private static final ThreadLocal<RetrievalSummary> LAST_SUMMARY = new ThreadLocal<>();
+    private static final ConcurrentMap<String, Deque<RetrievalSummary>> LAST_SUMMARY_BY_MEMORY = new ConcurrentHashMap<>();
+    private static final int MAX_BUFFERED_SUMMARY_PER_MEMORY = 8;
 
     public enum RetrievalProfile {
         LOCAL,
@@ -77,6 +88,8 @@ public class HybridKnowledgeRetrieverService {
     private static final String SCORE_KEY_DEPARTMENT = "department";
     private static final String SCORE_KEY_HOSPITAL_DOC = "hospital_document";
     private static final String SCORE_KEY_AUDIENCE = "audience_match";
+    private static final String SCORE_KEY_MEDICAL_STANDARD_MATCH = "medical_standard_concept_match";
+    private static final String SCORE_KEY_MEDICAL_STANDARD_MISSING = "missing_medical_standard_anchor";
     private static final double SCORE_WEIGHT_KEYWORD = 30.0;
     private static final double SCORE_WEIGHT_VECTOR = 20.0;
     private static final double SCORE_BONUS_CORE_PHRASE = 35.0;
@@ -85,6 +98,15 @@ public class HybridKnowledgeRetrieverService {
     private static final double SCORE_BONUS_DEPARTMENT = 20.0;
     private static final double SCORE_BONUS_HOSPITAL_DOC = 5.0;
     private static final double SCORE_BONUS_AUDIENCE = 5.0;
+    private static final double SCORE_BONUS_MEDICAL_STANDARD_MATCH = 18.0;
+    private static final double SCORE_PENALTY_MEDICAL_STANDARD_MISSING = -12.0;
+
+    @Autowired(required = false)
+    private ChatRetrievalQueryRewriteService chatRetrievalQueryRewriteService;
+    @Autowired(required = false)
+    private MedicalStandardLookupService medicalStandardLookupService;
+    @Autowired(required = false)
+    private MedicalKnowledgeMappingService medicalStandardKnowledgeMappingService;
 
     public HybridKnowledgeRetrieverService(JdbcTemplate jdbcTemplate,
                                            @Qualifier("knowledgeEmbeddingStore") EmbeddingStore<TextSegment> knowledgeEmbeddingStore,
@@ -109,8 +131,9 @@ public class HybridKnowledgeRetrieverService {
     }
 
     public List<Content> retrieve(Query query, RetrievalProfile profile) {
-        RetrievalSummary summary = search(query == null ? null : query.text(), profile);
-        LAST_SUMMARY.set(summary);
+        KnowledgeRetrievalQueryRewriteInfo rewriteInfo = rewriteQuery(query);
+        RetrievalSummary summary = searchInternal(query == null ? null : query.text(), rewriteInfo, profile);
+        rememberSummary(query == null || query.metadata() == null ? null : query.metadata().chatMemoryId(), summary);
         return summary.finalHits().stream()
                 .map(hit -> Content.from(TextSegment.from(hit.content(), hit.metadata())))
                 .toList();
@@ -133,10 +156,19 @@ public class HybridKnowledgeRetrieverService {
      * 这里同时产出最终检索结果和结构化摘要，后者会被聊天链路拿去做引用展示和审计日志。
      */
     public RetrievalSummary search(String rawQuery, RetrievalProfile profile) {
+        return searchInternal(rawQuery, rewriteQuery(rawQuery), profile);
+    }
+
+    private RetrievalSummary searchInternal(String rawQuery,
+                                            KnowledgeRetrievalQueryRewriteInfo rewriteInfo,
+                                            RetrievalProfile profile) {
         long startedAt = System.nanoTime();
-        String normalizedQuery = normalizeQuery(rawQuery);
+        String normalizedQuery = normalizeQuery(rewriteInfo == null ? rawQuery : rewriteInfo.effectiveQuery());
         String audience = resolveAudience();
         String queryType = classifyQuery(normalizedQuery);
+        List<KnowledgeRetrievalMatchedDiseaseEntity> matchedDiseaseEntities = resolveMatchedDiseaseEntities(normalizedQuery);
+        List<String> matchedSymptoms = resolveMatchedSymptoms(normalizedQuery);
+        List<String> matchedChiefComplaints = resolveMatchedChiefComplaints(normalizedQuery);
 
         SearchProfile searchProfile = resolveProfile(profile);
         long keywordStartedAt = System.nanoTime();
@@ -146,7 +178,9 @@ public class HybridKnowledgeRetrieverService {
         List<RetrievedChunk> vectorHits = searchByVector(normalizedQuery, audience, searchProfile.vectorTopK(), searchProfile.vectorMinScore());
         long vectorDurationMs = millisSince(vectorStartedAt);
         long mergeStartedAt = System.nanoTime();
-        List<RetrievedChunk> merged = rerankAndMerge(keywordHits, vectorHits, normalizedQuery, audience, searchProfile.finalTopK());
+        List<KnowledgeRetrievalDocumentEntityMatch> docEntityMatches = resolveDocumentEntityMatches(keywordHits, vectorHits);
+        List<RetrievedChunk> merged = rerankAndMerge(keywordHits, vectorHits, normalizedQuery, audience, searchProfile.finalTopK(),
+                matchedDiseaseEntities, docEntityMatches);
         long mergeDurationMs = millisSince(mergeStartedAt);
         long totalDurationMs = millisSince(startedAt);
 
@@ -154,6 +188,7 @@ public class HybridKnowledgeRetrieverService {
                 false, keywordDurationMs, vectorDurationMs, mergeDurationMs, totalDurationMs);
 
         RetrievalSummary summary = new RetrievalSummary(
+                rewriteInfo,
                 queryType,
                 keywordHits.size(),
                 vectorHits.size(),
@@ -161,31 +196,50 @@ public class HybridKnowledgeRetrieverService {
                 merged.isEmpty(),
                 totalDurationMs,
                 merged,
-                new RetrievalTimings(keywordDurationMs, vectorDurationMs, mergeDurationMs, false)
+                new RetrievalTimings(keywordDurationMs, vectorDurationMs, mergeDurationMs, false),
+                matchedDiseaseEntities,
+                matchedSymptoms,
+                matchedChiefComplaints,
+                docEntityMatches
         );
-        LAST_SUMMARY.set(summary);
+        rememberSummary(null, summary);
         return summary;
     }
 
     public KnowledgeRetrievalDiagnosticResponse diagnose(String rawQuery, String profileValue) {
         RetrievalProfile profile = "LOCAL".equalsIgnoreCase(profileValue) ? RetrievalProfile.LOCAL : RetrievalProfile.ONLINE;
         long startedAt = System.nanoTime();
-        //规范化搜索查询(把废话删掉)
-        String normalizedQuery = normalizeQuery(rawQuery);
+        KnowledgeRetrievalQueryRewriteInfo rewriteInfo = rewriteQuery(rawQuery);
+        String normalizedQuery = normalizeQuery(rewriteInfo == null ? rawQuery : rewriteInfo.effectiveQuery());
         String audience = resolveAudience();
         String queryType = classifyQuery(normalizedQuery);
         SearchProfile searchProfile = resolveProfile(profile);
-        //创建关键词的词根,
         List<String> keywordTokens = buildKeywordTokens(normalizedQuery);
         String booleanQuery = buildBooleanFullTextQuery(normalizedQuery, keywordTokens);
+        List<KnowledgeRetrievalMatchedDiseaseEntity> matchedDiseaseEntities = resolveMatchedDiseaseEntities(normalizedQuery);
+        List<String> matchedSymptoms = resolveMatchedSymptoms(normalizedQuery);
+        List<String> matchedChiefComplaints = resolveMatchedChiefComplaints(normalizedQuery);
         List<RetrievedChunk> keywordHits = searchByKeyword(normalizedQuery, audience, searchProfile.keywordTopK());
         List<RetrievedChunk> vectorHits = searchByVector(normalizedQuery, audience, searchProfile.vectorTopK(), searchProfile.vectorMinScore());
-        List<RetrievedChunk> finalHits = rerankAndMerge(keywordHits, vectorHits, normalizedQuery, audience, searchProfile.finalTopK());
+        List<KnowledgeRetrievalDocumentEntityMatch> docEntityMatches = resolveDocumentEntityMatches(keywordHits, vectorHits);
+        List<RetrievedChunk> finalHits = rerankAndMerge(keywordHits, vectorHits, normalizedQuery, audience, searchProfile.finalTopK(),
+                matchedDiseaseEntities, docEntityMatches);
         long durationMs = millisSince(startedAt);
 
         return new KnowledgeRetrievalDiagnosticResponse(
-                rawQuery,
+                rewriteInfo == null ? rawQuery : rewriteInfo.rawQuery(),
                 normalizedQuery,
+                rewriteInfo == null ? normalizedQuery : rewriteInfo.effectiveQuery(),
+                rewriteInfo == null ? "NONE" : rewriteInfo.rewriteMode(),
+                rewriteInfo != null && rewriteInfo.rewriteApplied(),
+                rewriteInfo == null ? List.of() : rewriteInfo.contextMessagesUsed(),
+                rewriteInfo == null ? List.of() : rewriteInfo.medicalAnchors(),
+                rewriteInfo == null ? null : rewriteInfo.modelRewriteCandidate(),
+                rewriteInfo != null && rewriteInfo.modelRewriteAccepted(),
+                matchedDiseaseEntities,
+                matchedSymptoms,
+                matchedChiefComplaints,
+                docEntityMatches,
                 audience,
                 profile.name(),
                 queryType,
@@ -204,6 +258,22 @@ public class HybridKnowledgeRetrieverService {
         RetrievalSummary summary = LAST_SUMMARY.get();
         LAST_SUMMARY.remove();
         return summary;
+    }
+
+    /**
+     * 在线链路的检索可能发生在异步线程里，单纯依赖 ThreadLocal 会把上一条请求的摘要误挂到当前回答上。
+     * 这里额外按会话维度缓存最近几条摘要，并且在消费时要求“当前问题 rawQuery 精确匹配”，
+     * 这样即使同一会话里刚问过感冒，再问肝癌，也不会把感冒的 citation 串到肝癌回答上。
+     */
+    public RetrievalSummary consumeLastSummary(Object chatMemoryId, String rawQuery) {
+        String normalizedQuery = normalizeQuery(rawQuery);
+        RetrievalSummary matchedSummary = consumeLastSummaryByMemory(chatMemoryId, normalizedQuery);
+        if (matchedSummary != null) {
+            LAST_SUMMARY.remove();
+            return matchedSummary;
+        }
+        RetrievalSummary threadSummary = consumeLastSummary();
+        return matchesRawQuery(threadSummary, normalizedQuery) ? threadSummary : null;
     }
 
     public ChatStreamMetadata toChatStreamMetadata(RetrievalSummary summary) {
@@ -270,6 +340,54 @@ public class HybridKnowledgeRetrieverService {
             return fullTextHits;
         }
         return searchByLikeFallback(normalizedQuery, tokens, audience, topK);
+    }
+
+    private void rememberSummary(Object chatMemoryId, RetrievalSummary summary) {
+        if (summary == null) {
+            return;
+        }
+        LAST_SUMMARY.set(summary);
+        if (chatMemoryId == null) {
+            return;
+        }
+        String key = String.valueOf(chatMemoryId);
+        LAST_SUMMARY_BY_MEMORY.compute(key, (ignored, existing) -> {
+            Deque<RetrievalSummary> summaries = existing == null ? new ArrayDeque<>() : existing;
+            summaries.addLast(summary);
+            while (summaries.size() > MAX_BUFFERED_SUMMARY_PER_MEMORY) {
+                summaries.removeFirst();
+            }
+            return summaries;
+        });
+    }
+
+    private RetrievalSummary consumeLastSummaryByMemory(Object chatMemoryId, String normalizedQuery) {
+        if (chatMemoryId == null || !StringUtils.hasText(normalizedQuery)) {
+            return null;
+        }
+        AtomicReference<RetrievalSummary> matched = new AtomicReference<>();
+        LAST_SUMMARY_BY_MEMORY.computeIfPresent(String.valueOf(chatMemoryId), (ignored, summaries) -> {
+            var iterator = summaries.descendingIterator();
+            while (iterator.hasNext()) {
+                RetrievalSummary candidate = iterator.next();
+                if (!matchesRawQuery(candidate, normalizedQuery)) {
+                    continue;
+                }
+                matched.set(candidate);
+                iterator.remove();
+                break;
+            }
+            return summaries.isEmpty() ? null : summaries;
+        });
+        return matched.get();
+    }
+
+    private boolean matchesRawQuery(RetrievalSummary summary, String normalizedQuery) {
+        if (summary == null || !StringUtils.hasText(normalizedQuery)) {
+            return false;
+        }
+        String summaryRawQuery = normalizeQuery(summary.rewriteInfo() == null ? null : summary.rewriteInfo().rawQuery());
+        return normalizedQuery.equals(summaryRawQuery);
     }
 
     private List<RetrievedChunk> searchByFullText(String normalizedQuery, List<String> tokens, String audience, int topK) {
@@ -436,7 +554,9 @@ public class HybridKnowledgeRetrieverService {
                                                 List<RetrievedChunk> vectorHits,
                                                 String query,
                                                 String audience,
-                                                int finalTopK) {
+                                                int finalTopK,
+                                                List<KnowledgeRetrievalMatchedDiseaseEntity> matchedDiseaseEntities,
+                                                List<KnowledgeRetrievalDocumentEntityMatch> docEntityMatches) {
         // 先按 file_hash + segment_id 去重，再做统一打分。
         // 这样同一段内容如果同时被关键词和向量命中，不会重复喂给模型，而是升级成一条 hybrid 命中。
         Map<String, RetrievedChunk> merged = new LinkedHashMap<>();
@@ -444,7 +564,8 @@ public class HybridKnowledgeRetrieverService {
         vectorHits.forEach(hit -> merged.merge(dedupeKey(hit), hit, this::mergeHit));
 
         return merged.values().stream()
-                .map(hit -> hit.withCombinedScore(scoreHit(hit, query, audience), scoreBreakdown(hit, query, audience)))
+                .map(hit -> hit.withCombinedScore(scoreHit(hit, query, audience, matchedDiseaseEntities, docEntityMatches),
+                        scoreBreakdown(hit, query, audience, matchedDiseaseEntities, docEntityMatches)))
                 .sorted(Comparator.comparingDouble(RetrievedChunk::combinedScore).reversed()
                         .thenComparing(RetrievedChunk::sourcePriority, Comparator.nullsLast(Comparator.reverseOrder()))
                         .thenComparing(RetrievedChunk::updatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
@@ -486,13 +607,21 @@ public class HybridKnowledgeRetrieverService {
         );
     }
 
-    private double scoreHit(RetrievedChunk hit, String query, String audience) {
-        return scoreBreakdown(hit, query, audience).stream()
+    private double scoreHit(RetrievedChunk hit,
+                            String query,
+                            String audience,
+                            List<KnowledgeRetrievalMatchedDiseaseEntity> matchedDiseaseEntities,
+                            List<KnowledgeRetrievalDocumentEntityMatch> docEntityMatches) {
+        return scoreBreakdown(hit, query, audience, matchedDiseaseEntities, docEntityMatches).stream()
                 .mapToDouble(KnowledgeRetrievalScoreBreakdown::contribution)
                 .sum();
     }
 
-    private List<KnowledgeRetrievalScoreBreakdown> scoreBreakdown(RetrievedChunk hit, String query, String audience) {
+    private List<KnowledgeRetrievalScoreBreakdown> scoreBreakdown(RetrievedChunk hit,
+                                                                  String query,
+                                                                  String audience,
+                                                                  List<KnowledgeRetrievalMatchedDiseaseEntity> matchedDiseaseEntities,
+                                                                  List<KnowledgeRetrievalDocumentEntityMatch> docEntityMatches) {
         // 这里的打分故意保持“解释性优先”，便于后面线上排查为什么某条文档被排到前面。
         // 目前先用规则重排，等这套规则稳定后，再评估是否有必要接入更重的模型 reranker。
         List<KnowledgeRetrievalScoreBreakdown> breakdown = new ArrayList<>();
@@ -527,6 +656,19 @@ public class HybridKnowledgeRetrieverService {
             addScoreBreakdown(breakdown, SCORE_KEY_AUDIENCE, "适用对象匹配", SCORE_BONUS_AUDIENCE, 1.0,
                     "文档适用对象与当前用户身份匹配");
         }
+        if (hasMedicalConceptMatch(hit, matchedDiseaseEntities, docEntityMatches)) {
+            addScoreBreakdown(breakdown, SCORE_KEY_MEDICAL_STANDARD_MATCH, "疾病标准命中", SCORE_BONUS_MEDICAL_STANDARD_MATCH, 1.0,
+                    "文档映射到与 query rewrite 相同的疾病概念");
+        } else if (!matchedDiseaseEntities.isEmpty()) {
+            breakdown.add(new KnowledgeRetrievalScoreBreakdown(
+                    SCORE_KEY_MEDICAL_STANDARD_MISSING,
+                    "缺少疾病锚点",
+                    SCORE_PENALTY_MEDICAL_STANDARD_MISSING,
+                    1.0,
+                    SCORE_PENALTY_MEDICAL_STANDARD_MISSING,
+                    "当前问题已命中疾病概念，但该文档未映射到同类概念"
+            ));
+        }
         return breakdown;
     }
 
@@ -551,7 +693,9 @@ public class HybridKnowledgeRetrieverService {
                 new KnowledgeRetrievalScoringRule(SCORE_KEY_DOCTOR, "医生命中", SCORE_BONUS_DOCTOR, "问题中包含文档关联医生或专家名称时加分"),
                 new KnowledgeRetrievalScoringRule(SCORE_KEY_DEPARTMENT, "科室命中", SCORE_BONUS_DEPARTMENT, "问题中包含文档关联科室时加分"),
                 new KnowledgeRetrievalScoringRule(SCORE_KEY_HOSPITAL_DOC, "院内文档加权", SCORE_BONUS_HOSPITAL_DOC, "文件名包含树兰时加分，优先院内知识"),
-                new KnowledgeRetrievalScoringRule(SCORE_KEY_AUDIENCE, "适用对象匹配", SCORE_BONUS_AUDIENCE, "文档适用对象与当前用户身份匹配时加分")
+                new KnowledgeRetrievalScoringRule(SCORE_KEY_AUDIENCE, "适用对象匹配", SCORE_BONUS_AUDIENCE, "文档适用对象与当前用户身份匹配时加分"),
+                new KnowledgeRetrievalScoringRule(SCORE_KEY_MEDICAL_STANDARD_MATCH, "疾病标准命中", SCORE_BONUS_MEDICAL_STANDARD_MATCH, "文档映射到与 query 相同的疾病概念时加分"),
+                new KnowledgeRetrievalScoringRule(SCORE_KEY_MEDICAL_STANDARD_MISSING, "缺少疾病锚点", SCORE_PENALTY_MEDICAL_STANDARD_MISSING, "query 已识别疾病概念但文档未映射到该概念时降权")
         );
     }
 
@@ -761,10 +905,75 @@ public class HybridKnowledgeRetrieverService {
         return KnowledgeSearchLexicon.normalizeSearchQuery(rawQuery);
     }
 
+    private KnowledgeRetrievalQueryRewriteInfo rewriteQuery(Query query) {
+        if (chatRetrievalQueryRewriteService == null) {
+            String normalized = normalizeQuery(query == null ? null : query.text());
+            return new KnowledgeRetrievalQueryRewriteInfo(normalized, normalized, "NONE", false, List.of(), List.of(), null, false, 0L);
+        }
+        return chatRetrievalQueryRewriteService.rewrite(query);
+    }
+
+    private KnowledgeRetrievalQueryRewriteInfo rewriteQuery(String rawQuery) {
+        if (chatRetrievalQueryRewriteService == null) {
+            String normalized = normalizeQuery(rawQuery);
+            return new KnowledgeRetrievalQueryRewriteInfo(normalized, normalized, "NONE", false, List.of(), List.of(), null, false, 0L);
+        }
+        return chatRetrievalQueryRewriteService.rewrite(rawQuery);
+    }
+
     private List<String> buildKeywordTokens(String query) {
         // query 扩词是关键词检索“看起来聪明一点”的关键。
         // 例如用户问“肝胆科”，这里会尽量扩成“肝胆胰外科”等院内更正式的叫法。
         return KnowledgeSearchLexicon.expandQueryTokens(query);
+    }
+
+    private List<KnowledgeRetrievalMatchedDiseaseEntity> resolveMatchedDiseaseEntities(String normalizedQuery) {
+        if (medicalStandardLookupService == null) {
+            return List.of();
+        }
+        return medicalStandardLookupService.matchDiseaseEntities(normalizedQuery, 6);
+    }
+
+    private List<String> resolveMatchedSymptoms(String normalizedQuery) {
+        if (medicalStandardLookupService == null) {
+            return List.of();
+        }
+        return medicalStandardLookupService.findMatchedSymptoms(normalizedQuery);
+    }
+
+    private List<String> resolveMatchedChiefComplaints(String normalizedQuery) {
+        if (medicalStandardLookupService == null) {
+            return List.of();
+        }
+        return medicalStandardLookupService.findMatchedChiefComplaints(normalizedQuery);
+    }
+
+    private List<KnowledgeRetrievalDocumentEntityMatch> resolveDocumentEntityMatches(List<RetrievedChunk> keywordHits,
+                                                                                     List<RetrievedChunk> vectorHits) {
+        if (medicalStandardKnowledgeMappingService == null) {
+            return List.of();
+        }
+        Set<String> hashes = new LinkedHashSet<>();
+        keywordHits.stream().map(RetrievedChunk::fileHash).filter(StringUtils::hasText).forEach(hashes::add);
+        vectorHits.stream().map(RetrievedChunk::fileHash).filter(StringUtils::hasText).forEach(hashes::add);
+        return medicalStandardKnowledgeMappingService.listDocumentMatches(new ArrayList<>(hashes));
+    }
+
+    private boolean hasMedicalConceptMatch(RetrievedChunk hit,
+                                        List<KnowledgeRetrievalMatchedDiseaseEntity> matchedDiseaseEntities,
+                                        List<KnowledgeRetrievalDocumentEntityMatch> docEntityMatches) {
+        if (hit == null || matchedDiseaseEntities == null || matchedDiseaseEntities.isEmpty()
+                || docEntityMatches == null || docEntityMatches.isEmpty()) {
+            return false;
+        }
+        Set<String> matchedUris = matchedDiseaseEntities.stream()
+                .map(KnowledgeRetrievalMatchedDiseaseEntity::conceptCode)
+                .filter(StringUtils::hasText)
+                .collect(Collectors.toSet());
+        return docEntityMatches.stream()
+                .filter(item -> hit.fileHash().equals(item.knowledgeHash()))
+                .map(KnowledgeRetrievalDocumentEntityMatch::conceptCode)
+                .anyMatch(matchedUris::contains);
     }
 
     private String lower(String text) {
@@ -829,14 +1038,19 @@ public class HybridKnowledgeRetrieverService {
         return content.length() <= 180 ? content : content.substring(0, 180) + "...";
     }
 
-    public record RetrievalSummary(String queryType,
+    public record RetrievalSummary(KnowledgeRetrievalQueryRewriteInfo rewriteInfo,
+                                   String queryType,
                                    int retrievedCountKeyword,
                                    int retrievedCountVector,
                                    int mergedCount,
                                    boolean emptyRecall,
                                    long durationMs,
                                    List<RetrievedChunk> finalHits,
-                                   RetrievalTimings timings) {
+                                   RetrievalTimings timings,
+                                   List<KnowledgeRetrievalMatchedDiseaseEntity> matchedDiseaseEntities,
+                                   List<String> matchedSymptoms,
+                                   List<String> matchedChiefComplaints,
+                                   List<KnowledgeRetrievalDocumentEntityMatch> docEntityMatches) {
     }
 
     public record RetrievalTimings(long keywordDurationMs,

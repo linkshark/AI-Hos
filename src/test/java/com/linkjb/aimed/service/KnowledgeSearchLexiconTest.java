@@ -60,4 +60,16 @@ class KnowledgeSearchLexiconTest {
         assertTrue(keywordSeed.contains("挂号"));
         assertTrue(keywordSeed.contains("指南"));
     }
+
+    @Test
+    void shouldExtractRewriteAnchorsAndFilterNoise() {
+        List<String> hints = KnowledgeSearchLexicon.extractMedicalRewriteHints("我现在30岁 感冒了 没有别的症状 吃点什么药");
+
+        assertTrue(hints.contains("感冒"));
+        assertTrue(hints.contains("30岁"));
+        assertTrue(hints.contains("无其他症状"));
+        assertTrue(hints.contains("吃点什么药"));
+        assertFalse(hints.contains("我现在"));
+        assertFalse(hints.contains("没有别的症状"));
+    }
 }

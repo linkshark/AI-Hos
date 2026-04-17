@@ -1,11 +1,14 @@
 package com.linkjb.aimed.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.linkjb.aimed.bean.chat.ChatStreamMetadata;
+import com.linkjb.aimed.entity.dto.response.chat.ChatStreamMetadata;
+import com.linkjb.aimed.assistant.LocalDirectAiMedAgent;
 import com.linkjb.aimed.assistant.LocalStreamingAiMedAgent;
+import com.linkjb.aimed.assistant.OnlineDirectAiMedAgent;
 import com.linkjb.aimed.assistant.OnlineFastAiMedAgent;
+import com.linkjb.aimed.assistant.OnlineFastDirectAiMedAgent;
 import com.linkjb.aimed.assistant.OnlineAiMedAgent;
-import com.linkjb.aimed.bean.ChatProviderConfigResponse;
+import com.linkjb.aimed.entity.dto.response.ChatProviderConfigResponse;
 import com.linkjb.aimed.config.skywalk.RequestTraceFilter;
 import com.linkjb.aimed.config.skywalk.TraceIdProvider;
 import dev.langchain4j.service.TokenStream;
@@ -51,33 +54,48 @@ public class ChatApplicationService {
     public static final String STREAM_METADATA_MARKER = "\n\n[[AIMED_STREAM_METADATA]]";
 
     private final LocalStreamingAiMedAgent localStreamingAiMedAgent;
+    private final LocalDirectAiMedAgent localDirectAiMedAgent;
     private final OnlineAiMedAgent onlineAiMedAgent;
+    private final OnlineDirectAiMedAgent onlineDirectAiMedAgent;
     private final OnlineFastAiMedAgent onlineFastAiMedAgent;
+    private final OnlineFastDirectAiMedAgent onlineFastDirectAiMedAgent;
     private final KnowledgeBaseService knowledgeBaseService;
     private final HybridKnowledgeRetrieverService hybridKnowledgeRetrieverService;
     private final VisionChatService visionChatService;
     private final TraceIdProvider traceIdProvider;
     private final ChatProviderPolicy chatProviderPolicy;
     private final ChatStreamMetadataAssembler chatStreamMetadataAssembler;
+    private final ChatIntentAnalysisService chatIntentAnalysisService;
+    private final McpServerAdminService mcpServerAdminService;
 
     public ChatApplicationService(LocalStreamingAiMedAgent localStreamingAiMedAgent,
+                                  LocalDirectAiMedAgent localDirectAiMedAgent,
                                   OnlineAiMedAgent onlineAiMedAgent,
+                                  OnlineDirectAiMedAgent onlineDirectAiMedAgent,
                                   OnlineFastAiMedAgent onlineFastAiMedAgent,
+                                  OnlineFastDirectAiMedAgent onlineFastDirectAiMedAgent,
                                   KnowledgeBaseService knowledgeBaseService,
                                   HybridKnowledgeRetrieverService hybridKnowledgeRetrieverService,
                                   VisionChatService visionChatService,
                                   TraceIdProvider traceIdProvider,
+                                  ChatIntentAnalysisService chatIntentAnalysisService,
+                                  McpServerAdminService mcpServerAdminService,
                                   ObjectMapper objectMapper,
                                   @Value("${app.provider.default:LOCAL_OLLAMA}") String defaultProvider,
                                   @Value("${app.provider.local-enabled:true}") boolean localProviderEnabled,
                                   @Value("${app.provider.online-enabled:true}") boolean onlineProviderEnabled) {
         this.localStreamingAiMedAgent = localStreamingAiMedAgent;
+        this.localDirectAiMedAgent = localDirectAiMedAgent;
         this.onlineAiMedAgent = onlineAiMedAgent;
+        this.onlineDirectAiMedAgent = onlineDirectAiMedAgent;
         this.onlineFastAiMedAgent = onlineFastAiMedAgent;
+        this.onlineFastDirectAiMedAgent = onlineFastDirectAiMedAgent;
         this.knowledgeBaseService = knowledgeBaseService;
         this.hybridKnowledgeRetrieverService = hybridKnowledgeRetrieverService;
         this.visionChatService = visionChatService;
         this.traceIdProvider = traceIdProvider;
+        this.chatIntentAnalysisService = chatIntentAnalysisService == null ? new ChatIntentAnalysisService() : chatIntentAnalysisService;
+        this.mcpServerAdminService = mcpServerAdminService;
         this.chatProviderPolicy = new ChatProviderPolicy(defaultProvider, localProviderEnabled, onlineProviderEnabled);
         this.chatStreamMetadataAssembler = new ChatStreamMetadataAssembler(objectMapper, hybridKnowledgeRetrieverService, log);
     }
@@ -129,38 +147,44 @@ public class ChatApplicationService {
                                    String message,
                                    String summaryFallbackQuery,
                                    ChatRuntimeTrace runtimeTrace) {
+        ChatIntentAnalysisService.ChatIntentResult intentResult = chatIntentAnalysisService.analyze(summaryFallbackQuery);
+        log.info("chat.intent provider={} memoryId={} intent={} routeTarget={} ragApplied={} reason={}",
+                provider, memoryId, intentResult.intentType(), intentResult.routeTarget(), intentResult.ragRequired(), intentResult.reason());
+        String routedMessage = buildRoutedMessage(message, intentResult);
         if (chatProviderPolicy.isOnlineProvider(provider)) {
-            return startOnlineChat(provider, memoryId, message, summaryFallbackQuery, runtimeTrace);
+            return startOnlineChat(provider, memoryId, routedMessage, summaryFallbackQuery, runtimeTrace, intentResult);
         }
-        return startLocalChat(provider, memoryId, message, summaryFallbackQuery, runtimeTrace);
+        return startLocalChat(provider, memoryId, routedMessage, summaryFallbackQuery, runtimeTrace, intentResult);
     }
 
     private Flux<String> startOnlineChat(String provider,
                                          Long memoryId,
                                          String message,
                                          String summaryFallbackQuery,
-                                         ChatRuntimeTrace runtimeTrace) {
+                                         ChatRuntimeTrace runtimeTrace,
+                                         ChatIntentAnalysisService.ChatIntentResult intentResult) {
         boolean isFastProvider = QWEN_ONLINE_FAST.equals(provider);
         runtimeTrace.setToolMode(isFastProvider ? "FAST" : "DEEP");
-        Flux<String> source = isFastProvider
-                ? onlineFastAiMedAgent.chat(memoryId, message)
-                : onlineAiMedAgent.chat(memoryId, message);
-        log.info("chat.online.path memoryId={} toolMode={} chars={}",
-                memoryId, isFastProvider ? "fast" : "deep", textLength(message));
+        Flux<String> source = selectOnlineSource(isFastProvider, intentResult.ragRequired(), memoryId, message);
+        log.info("chat.online.path memoryId={} toolMode={} ragApplied={} chars={}",
+                memoryId, isFastProvider ? "fast" : "deep", intentResult.ragRequired(), textLength(message));
         // 在线模型本身已经是 Flux，因此正文先自然流出，等流结束后再把检索摘要拼成一个 metadata 尾包。
         // 这样前端既能第一时间看到回答，也不会因为等引用而卡住首屏输出。
         return withFluxLogs(provider, memoryId, source, runtimeTrace)
-                .concatWith(Flux.defer(() -> emitMetadataChunk(provider, memoryId, summaryFallbackQuery, runtimeTrace)));
+                .concatWith(Flux.defer(() -> emitMetadataChunk(provider, memoryId, summaryFallbackQuery, runtimeTrace, intentResult)));
     }
 
     private Flux<String> startLocalChat(String provider,
                                         Long memoryId,
                                         String message,
                                         String summaryFallbackQuery,
-                                        ChatRuntimeTrace runtimeTrace) {
+                                        ChatRuntimeTrace runtimeTrace,
+                                        ChatIntentAnalysisService.ChatIntentResult intentResult) {
         // 本地 Ollama 仍按 token 流输出，前端继续用统一的流式解码逻辑消费。
         // 这里多做了一层“最终文本兜底”，是因为本地模型偶发会出现 partial 很少、complete 里才有稳定正文的情况。
-        TokenStream tokenStream = localStreamingAiMedAgent.chat(memoryId, message);
+        TokenStream tokenStream = intentResult.ragRequired()
+                ? localStreamingAiMedAgent.chat(memoryId, message)
+                : localDirectAiMedAgent.chat(memoryId, message);
         return Flux.create(emitter -> {
             long startedAt = System.nanoTime();
             AtomicInteger chunkCount = new AtomicInteger();
@@ -184,14 +208,16 @@ public class ChatApplicationService {
                         emitter.next(partial);
                     }))
                     .onCompleteResponse(tracedConsumer(requestTraceId, "chat.local.stream.complete", response -> {
-                        HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary = resolveRetrievalSummary(provider, summaryFallbackQuery);
-                        ChatStreamMetadata metadata = buildStreamMetadata(runtimeTrace, retrievalSummary);
+                        HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary = resolveRetrievalSummary(provider, memoryId, summaryFallbackQuery, intentResult);
+                        ChatStreamMetadata metadata = buildStreamMetadata(runtimeTrace, intentResult, retrievalSummary);
                         logRetrievalSummary(provider, memoryId, retrievalSummary);
                         String finalText = finalResponseText(response);
                         // 如果本地模型最后没给出稳定正文，就退化成基于 citation 的简短总结，至少保证用户看到的是一句能读懂的话，
                         // 而不是“只有引用标签，没有回答正文”。
                         if (!StringUtils.hasText(finalText) && !StringUtils.hasText(streamedText.toString())) {
-                            finalText = fallbackAnswerFromCitations(retrievalSummary, summaryFallbackQuery);
+                            finalText = intentResult.ragRequired()
+                                    ? fallbackAnswerFromCitations(retrievalSummary, summaryFallbackQuery)
+                                    : fallbackAnswerForSkippedRag(intentResult);
                         }
                         if (shouldEmitFinalText(streamedText.toString(), finalText)) {
                             emitter.next(finalText);
@@ -217,12 +243,27 @@ public class ChatApplicationService {
     private Flux<String> emitMetadataChunk(String provider,
                                            Long memoryId,
                                            String summaryFallbackQuery,
-                                           ChatRuntimeTrace runtimeTrace) {
-        HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary = resolveRetrievalSummary(provider, summaryFallbackQuery);
-        ChatStreamMetadata metadata = buildStreamMetadata(runtimeTrace, retrievalSummary);
+                                           ChatRuntimeTrace runtimeTrace,
+                                           ChatIntentAnalysisService.ChatIntentResult intentResult) {
+        HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary = resolveRetrievalSummary(provider, memoryId, summaryFallbackQuery, intentResult);
+        ChatStreamMetadata metadata = buildStreamMetadata(runtimeTrace, intentResult, retrievalSummary);
         logRetrievalSummary(provider, memoryId, retrievalSummary);
         String metadataChunk = chatStreamMetadataAssembler.encodeWithMarker(STREAM_METADATA_MARKER, metadata);
         return StringUtils.hasText(metadataChunk) ? Flux.just(metadataChunk) : Flux.empty();
+    }
+
+    private Flux<String> selectOnlineSource(boolean isFastProvider,
+                                            boolean ragRequired,
+                                            Long memoryId,
+                                            String message) {
+        if (isFastProvider) {
+            return ragRequired
+                    ? onlineFastAiMedAgent.chat(memoryId, message)
+                    : onlineFastDirectAiMedAgent.chat(memoryId, message);
+        }
+        return ragRequired
+                ? onlineAiMedAgent.chat(memoryId, message)
+                : onlineDirectAiMedAgent.chat(memoryId, message);
     }
 
     private Flux<String> withFluxLogs(String provider, Long memoryId, Flux<String> source, ChatRuntimeTrace runtimeTrace) {
@@ -273,8 +314,14 @@ public class ChatApplicationService {
         return text == null ? 0 : text.length();
     }
 
-    private HybridKnowledgeRetrieverService.RetrievalSummary resolveRetrievalSummary(String provider, String fallbackQuery) {
-        HybridKnowledgeRetrieverService.RetrievalSummary summary = hybridKnowledgeRetrieverService.consumeLastSummary();
+    private HybridKnowledgeRetrieverService.RetrievalSummary resolveRetrievalSummary(String provider,
+                                                                                     Long memoryId,
+                                                                                     String fallbackQuery,
+                                                                                     ChatIntentAnalysisService.ChatIntentResult intentResult) {
+        if (intentResult != null && !intentResult.ragRequired()) {
+            return null;
+        }
+        HybridKnowledgeRetrieverService.RetrievalSummary summary = hybridKnowledgeRetrieverService.consumeLastSummary(memoryId, fallbackQuery);
         if (summary != null) {
             return summary;
         }
@@ -300,6 +347,7 @@ public class ChatApplicationService {
     }
 
     private ChatStreamMetadata buildStreamMetadata(ChatRuntimeTrace runtimeTrace,
+                                                   ChatIntentAnalysisService.ChatIntentResult intentResult,
                                                    HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary) {
         return chatStreamMetadataAssembler.buildAndRemember(
                 runtimeTrace.traceId(),
@@ -309,6 +357,7 @@ public class ChatApplicationService {
                 runtimeTrace.hasAttachments(),
                 runtimeTrace.firstTokenLatencyMs(),
                 runtimeTrace.toolMode(),
+                intentResult,
                 retrievalSummary
         );
     }
@@ -431,6 +480,44 @@ public class ChatApplicationService {
                     .append("。本回答未直接摘录原文片段，不替代医生诊断或药师用药指导。");
         }
         return builder.toString();
+    }
+
+    private String fallbackAnswerForSkippedRag(ChatIntentAnalysisService.ChatIntentResult intentResult) {
+        if (intentResult == null) {
+            return "当前请求没有触发知识库检索，但模型暂时没有产出稳定回答，请稍后再试。";
+        }
+        if ("MCP".equals(intentResult.routeTarget())) {
+            return "当前工具类请求没有触发知识库检索，但工具暂时没有返回稳定结果，请稍后再试或检查后台 MCP 服务。";
+        }
+        if ("APPOINTMENT".equals(intentResult.routeTarget())) {
+            return "当前挂号请求没有触发知识库检索，但工具暂时没有返回稳定结果。请补充姓名、身份证号、科室、日期和时间后再试。";
+        }
+        return "当前问题不需要知识库检索，但模型暂时没有产出稳定回答，请换一种说法再试。";
+    }
+
+    private String buildRoutedMessage(String message, ChatIntentAnalysisService.ChatIntentResult intentResult) {
+        if (intentResult == null || intentResult.ragRequired() || !"MCP".equals(intentResult.routeTarget())) {
+            return message;
+        }
+        String toolContext = mcpServerAdminService == null ? "当前没有启用的 MCP 服务。" : mcpServerAdminService.describeEnabledToolsForAgent();
+        return """
+                当前用户问题：
+                %s
+
+                动态 MCP 工具上下文：
+                %s
+
+                执行要求：
+                - 这轮不要使用知识库检索结果。
+                - 必须从上面的动态 MCP 工具清单中选择最匹配的工具。
+                - 直接调用“调用MCP工具”，toolName 使用清单里的 tool 名称；argumentsJson 必须是 JSON object 字符串。
+                - 如果没有匹配工具，明确说明当前没有可用工具，不要输出医疗问答兜底。
+                - 工具返回后，基于工具结果用中文简洁回答用户原问题。
+                """.formatted(message, toolContext);
+    }
+
+    String buildRoutedMessageForTest(String message, ChatIntentAnalysisService.ChatIntentResult intentResult) {
+        return buildRoutedMessage(message, intentResult);
     }
 
     private <T> Consumer<T> tracedConsumer(String requestTraceId, String operationName, Consumer<T> delegate) {

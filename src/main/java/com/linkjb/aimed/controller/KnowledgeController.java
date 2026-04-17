@@ -1,10 +1,10 @@
 package com.linkjb.aimed.controller;
 
-import com.linkjb.aimed.bean.KnowledgeDocumentDetail;
-import com.linkjb.aimed.bean.KnowledgeBatchActionRequest;
-import com.linkjb.aimed.bean.KnowledgeFileInfo;
-import com.linkjb.aimed.bean.KnowledgeUpdateRequest;
-import com.linkjb.aimed.bean.KnowledgeUploadResponse;
+import com.linkjb.aimed.entity.vo.KnowledgeDocumentDetail;
+import com.linkjb.aimed.entity.dto.request.KnowledgeBatchActionRequest;
+import com.linkjb.aimed.entity.vo.KnowledgeFileInfo;
+import com.linkjb.aimed.entity.dto.request.KnowledgeUpdateRequest;
+import com.linkjb.aimed.entity.dto.response.KnowledgeUploadResponse;
 import com.linkjb.aimed.security.AuthenticatedUser;
 import com.linkjb.aimed.service.AuditLogService;
 import com.linkjb.aimed.service.KnowledgeBaseService;

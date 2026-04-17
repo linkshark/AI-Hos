@@ -1,6 +1,6 @@
 package com.linkjb.aimed.service;
 
-import com.linkjb.aimed.bean.RegisterRequest;
+import com.linkjb.aimed.entity.dto.request.RegisterRequest;
 import com.linkjb.aimed.config.AuthProperties;
 import org.junit.jupiter.api.Test;
 

@@ -422,6 +422,115 @@
               <textarea v-model.trim="metadataForm.keywords" rows="3" placeholder="多个关键词用空格分隔" />
             </label>
           </div>
+            <div class="metadata-disease-card">
+              <div class="metadata-disease-head">
+                <div>
+                  <strong>关联疾病</strong>
+                  <span>从疾病树中手动勾选适用疾病，可多选。左侧勾选后右侧立即同步，点击这里单独保存。</span>
+                </div>
+                <div class="metadata-disease-actions">
+                  <span class="metadata-disease-count">{{ diseaseSelectorStatusText }}</span>
+                  <button
+                    class="primary-button slim-button"
+                    type="button"
+                    :disabled="diseaseMappingSaving || diseaseMappingLoading || !hasDiseaseMappingChanges"
+                    @click="saveDiseaseMappings(selectedDetail.hash)"
+                  >
+                    {{ diseaseMappingSaving ? '保存中...' : '保存关联疾病' }}
+                  </button>
+                  <button
+                    class="secondary-button slim-button"
+                    type="button"
+                    :disabled="!diseaseMappingSelectedCodes.length"
+                    @click="clearSelectedDiseases"
+                  >
+                    清空已选
+                  </button>
+                </div>
+              </div>
+              <div class="metadata-disease-body">
+                <div class="metadata-disease-picker">
+                  <label class="metadata-field">
+                    <span>检索疾病</span>
+                    <input v-model.trim="diseaseSelectorKeyword" type="text" placeholder="如 感冒、肝癌、C22、gm" />
+                  </label>
+                  <div class="metadata-disease-hint">
+                    <span>{{ isDiseaseSelectorSearchMode ? '检索树' : '分类树' }}</span>
+                    <small>{{ isDiseaseSelectorSearchMode ? '输入后自动过滤并展示命中的疾病树' : '展开分类后勾选疾病，可多选' }}</small>
+                  </div>
+                  <div class="metadata-disease-tree-shell">
+                    <el-tree
+                      :key="diseaseSelectorTreeRenderKey"
+                      ref="diseaseSelectorTreeRef"
+                      class="metadata-disease-tree"
+                      :data="diseaseSelectorTreeData"
+                      node-key="nodeKey"
+                      show-checkbox
+                      :props="diseaseSelectorTreeProps"
+                      :lazy="!isDiseaseSelectorSearchMode"
+                      :load="loadKnowledgeDiseaseTreeNode"
+                      :default-expand-all="isDiseaseSelectorSearchMode"
+                      :expand-on-click-node="false"
+                      :check-on-click-node="true"
+                      :empty-text="diseaseSelectorLoading ? '疾病树加载中...' : '暂无疾病数据'"
+                      @node-click="handleKnowledgeDiseaseNodeClick"
+                      @check="handleKnowledgeDiseaseTreeCheck"
+                    >
+                      <template #default="{ data }">
+                        <div :class="['knowledge-disease-tree-node', data.nodeType === 'CATEGORY' ? 'category' : 'disease']">
+                          <div class="knowledge-disease-tree-main">
+                            <div class="knowledge-disease-tree-title-row">
+                              <strong>{{ data.label }}</strong>
+                              <span :class="['knowledge-disease-tree-badge', data.nodeType === 'CATEGORY' ? 'category' : 'disease']">
+                                {{ data.nodeType === 'CATEGORY' ? '分类' : '疾病' }}
+                              </span>
+                            </div>
+                            <span v-if="data.nodeType === 'CATEGORY'">{{ data.categoryCode }} · {{ data.count || 0 }} 个疾病</span>
+                            <span v-else>{{ data.standardCode || data.conceptCode }}</span>
+                          </div>
+                        </div>
+                      </template>
+                    </el-tree>
+                  </div>
+                </div>
+
+                <div class="metadata-disease-selected">
+                  <div class="metadata-disease-selected-head">
+                    <strong>已选疾病</strong>
+                    <small>{{ hasDiseaseMappingChanges ? '当前选择尚未保存。' : '当前选择已保存。' }}</small>
+                  </div>
+                  <div v-if="diseaseMappings.length" class="metadata-disease-list">
+                    <article
+                      v-for="(item, index) in diseaseMappings"
+                      :key="item.conceptCode"
+                      :class="['metadata-disease-item', { dragging: draggedDiseaseCode === item.conceptCode }]"
+                      draggable="true"
+                      @dragstart="handleDiseaseDragStart(item.conceptCode)"
+                      @dragover.prevent="handleDiseaseDragOver(item.conceptCode)"
+                      @drop.prevent="handleDiseaseDrop(item.conceptCode)"
+                      @dragend="handleDiseaseDragEnd"
+                    >
+                      <div>
+                        <strong>
+                          <span class="metadata-disease-priority">P{{ index + 1 }}</span>
+                          {{ item.diseaseTitle || item.standardCode || item.conceptCode }}
+                        </strong>
+                        <span>{{ item.standardCode || item.conceptCode }}</span>
+                      </div>
+                      <div class="metadata-disease-item-actions">
+                        <span class="metadata-disease-drag-handle">拖动排序</span>
+                        <button class="secondary-button slim-button metadata-disease-remove" type="button" @click="removeSelectedDisease(item.conceptCode)">
+                          移除
+                        </button>
+                      </div>
+                    </article>
+                  </div>
+                  <p v-else class="metadata-disease-empty">
+                    暂未选择疾病。左侧勾选后，会同步显示在这里。
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -502,7 +611,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import AdminEntryActionButton from '@/components/AdminEntryActionButton.vue'
@@ -532,6 +641,20 @@ const isSaving = ref(false)
 const isDeleting = ref(false)
 const isEditing = ref(false)
 const isPollingProcessing = ref(false)
+const diseaseMappingLoading = ref(false)
+const diseaseMappingSaving = ref(false)
+const diseaseMappings = ref([])
+const diseaseMappingSelectedCodes = ref([])
+const savedDiseaseMappingCodes = ref([])
+const diseaseSelectorTreeRef = ref(null)
+const diseaseSelectorKeyword = ref('')
+const diseaseSelectorLoading = ref(false)
+const diseaseSelectorSearchLoading = ref(false)
+const diseaseSelectorSearchPerformed = ref(false)
+const diseaseSelectorTreeVersion = ref(0)
+const diseaseSelectorCategories = shallowRef([])
+const diseaseSelectorSearchIndex = shallowRef([])
+const diseaseSelectorSearchResults = shallowRef([])
 const detailSections = reactive({
   overview: true,
   metadata: true,
@@ -539,8 +662,16 @@ const detailSections = reactive({
   chunks: false,
 })
 let processingPollTimer = null
+let diseaseSelectorSearchTimer = null
+const diseaseSelectorCategoryChildrenCache = new Map()
 const GENERAL_DEPT_CODE = 'GENERAL'
 const GENERAL_DEPT_LABEL = '通用'
+const diseaseSelectorTreeProps = {
+  label: 'label',
+  children: 'children',
+  isLeaf: 'leaf',
+  disabled: 'disabled',
+}
 
 const metadataForm = reactive({
   docType: '',
@@ -633,6 +764,63 @@ const filteredDeptTreeOptions = computed(() => {
   )
 })
 
+const normalizedDiseaseSelectorKeyword = computed(() => diseaseSelectorKeyword.value.trim().toLowerCase())
+const isDiseaseSelectorSearchMode = computed(() => Boolean(normalizedDiseaseSelectorKeyword.value))
+const diseaseSelectorSearchTreeData = computed(() => {
+  if (!isDiseaseSelectorSearchMode.value) {
+    return []
+  }
+  const categoryOrder = new Map(diseaseSelectorCategories.value.map((item, index) => [item.categoryCode, index]))
+  const groups = new Map()
+  diseaseSelectorSearchResults.value.forEach((item) => {
+    const categoryCode = item.categoryCode || 'UNCATEGORIZED'
+    if (!groups.has(categoryCode)) {
+      groups.set(categoryCode, {
+        nodeType: 'CATEGORY',
+        nodeKey: `SEARCH_CATEGORY:${categoryCode}`,
+        label: item.categoryName || '未分类',
+        categoryCode,
+        count: 0,
+        disabled: true,
+        leaf: false,
+        children: [],
+      })
+    }
+    groups.get(categoryCode).children.push({
+      ...item,
+      nodeKey: item.conceptCode,
+      nodeType: 'DISEASE',
+      disabled: false,
+      leaf: true,
+    })
+  })
+  return Array.from(groups.values())
+    .sort((left, right) => (categoryOrder.get(left.categoryCode) ?? 9999) - (categoryOrder.get(right.categoryCode) ?? 9999))
+    .map((group) => ({
+      ...group,
+      count: group.children.length,
+    }))
+})
+const diseaseSelectorTreeData = computed(() => (
+  isDiseaseSelectorSearchMode.value ? diseaseSelectorSearchTreeData.value : diseaseSelectorCategories.value
+))
+const diseaseSelectorTreeRenderKey = computed(() => (
+  `${isDiseaseSelectorSearchMode.value ? 'search' : 'browse'}-${diseaseSelectorTreeVersion.value}`
+))
+const diseaseSelectorStatusText = computed(() => {
+  if (!diseaseSelectorKeyword.value.trim()) {
+    return `已选 ${diseaseMappingSelectedCodes.value.length} 项`
+  }
+  if (diseaseSelectorSearchLoading.value) {
+    return '检索中'
+  }
+  return `命中 ${diseaseSelectorSearchResults.value.length} 项`
+})
+const hasDiseaseMappingChanges = computed(() => (
+  normalizeDiseaseConceptCodes(diseaseMappingSelectedCodes.value).join('|')
+  !== normalizeDiseaseConceptCodes(savedDiseaseMappingCodes.value).join('|')
+))
+
 const stageCounts = computed(() => {
   const counts = {
     ALL: files.value.length,
@@ -716,7 +904,7 @@ const detailStageHint = computed(() => {
 })
 
 onMounted(async () => {
-  await loadDeptTree()
+  await Promise.all([loadDeptTree(), loadDiseaseSelectorCategories()])
   await loadFiles(route.query.hash || '')
 })
 
@@ -731,6 +919,10 @@ watch(
 
 onBeforeUnmount(() => {
   stopProcessingPolling()
+  if (diseaseSelectorSearchTimer) {
+    window.clearTimeout(diseaseSelectorSearchTimer)
+    diseaseSelectorSearchTimer = null
+  }
 })
 
 watch(
@@ -741,6 +933,25 @@ watch(
     }
   }
 )
+
+watch(diseaseSelectorKeyword, (value) => {
+  if (diseaseSelectorSearchTimer) {
+    window.clearTimeout(diseaseSelectorSearchTimer)
+  }
+  const keyword = value.trim()
+  if (!keyword) {
+    diseaseSelectorSearchPerformed.value = false
+    diseaseSelectorSearchResults.value = []
+    diseaseSelectorTreeVersion.value += 1
+    nextTick(() => {
+      syncDiseaseSelectorCheckedState()
+    })
+    return
+  }
+  diseaseSelectorSearchTimer = window.setTimeout(() => {
+    void searchDiseaseSelectorTree()
+  }, 220)
+})
 
 const openUpload = () => {
   uploadInputRef.value?.click()
@@ -874,9 +1085,13 @@ const clearDeletedFileSnapshot = (deletedHash) => {
     selectedHash.value = ''
     selectedDetail.value = null
     editorContent.value = ''
+    diseaseMappings.value = []
+    diseaseMappingSelectedCodes.value = []
+    savedDiseaseMappingCodes.value = []
     isEditing.value = false
     closeDeptTreePicker()
     syncMetadataForm(null)
+    void syncDiseaseSelectorCheckedState()
     stopProcessingPolling()
     if (route.query.hash) {
       router.replace({ path: '/knowledge', query: {} })
@@ -921,11 +1136,11 @@ const startProcessingPolling = (hash) => {
     try {
       const { data } = await apiClient.get(`/api/aimed/knowledge/files/${hash}`)
       selectedHash.value = data.hash
-    selectedDetail.value = data
-    editorContent.value = data?.extractedText || ''
-    syncMetadataForm(data)
-    closeDeptTreePicker()
-    files.value = files.value.map((file) => (file.hash === data.hash ? { ...file, ...data } : file))
+      selectedDetail.value = data
+      editorContent.value = data?.extractedText || ''
+      syncMetadataForm(data)
+      closeDeptTreePicker()
+      files.value = files.value.map((file) => (file.hash === data.hash ? { ...file, ...data } : file))
       if (!['DRAFT', 'PROCESSING'].includes(data.processingStatus)) {
         stopProcessingPolling()
         await loadFiles(data.hash)
@@ -959,6 +1174,9 @@ const loadFiles = async (preferredHash = '') => {
     } else {
       selectedHash.value = ''
       selectedDetail.value = null
+      diseaseMappings.value = []
+      diseaseMappingSelectedCodes.value = []
+      savedDiseaseMappingCodes.value = []
       isEditing.value = false
       closeDeptTreePicker()
       if (route.query.hash) {
@@ -986,6 +1204,7 @@ const selectFile = async (hash) => {
     syncMetadataForm(data)
     closeDeptTreePicker()
     isEditing.value = false
+    void loadDiseaseMappings(data.hash)
     detailSections.overview = true
     // 详情页一旦点到“处理中”的文件，就主动进入锁定态。
     // 这样页面不会出现“看起来还能点发布/归档，点了却报错”的反直觉体验。
@@ -1244,6 +1463,331 @@ const syncMetadataForm = (detail) => {
   metadataForm.doctorName = detail?.doctorName || ''
   metadataForm.sourcePriority = Number.isFinite(Number(detail?.sourcePriority)) ? Number(detail.sourcePriority) : 50
   metadataForm.keywords = detail?.keywords || ''
+}
+
+const loadDiseaseSelectorCategories = async () => {
+  diseaseSelectorLoading.value = true
+  try {
+    clearDiseaseSelectorCaches()
+    const categories = await loadMedicalStandardJson('disease-categories.json')
+    diseaseSelectorCategories.value = markRaw((Array.isArray(categories) ? categories : []).map((item) => ({
+      ...item,
+      nodeKey: `CATEGORY:${item.categoryCode}`,
+      nodeType: 'CATEGORY',
+      disabled: true,
+      leaf: false,
+    })))
+    await nextTick()
+    syncDiseaseSelectorCheckedState()
+  } catch (error) {
+    console.error('加载疾病树失败:', error)
+    diseaseSelectorCategories.value = []
+    ElMessage.error(resolveAxiosErrorMessage(error, '疾病树加载失败。'))
+  } finally {
+    diseaseSelectorLoading.value = false
+  }
+}
+
+const loadMedicalStandardJson = async (path) => {
+  const base = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`
+  const response = await fetch(`${base}medical-standards/${path}`, { cache: 'force-cache' })
+  if (!response.ok) {
+    throw new Error(`疾病静态数据加载失败: ${response.status}`)
+  }
+  return response.json()
+}
+
+const clearDiseaseSelectorCaches = () => {
+  diseaseSelectorCategoryChildrenCache.clear()
+  diseaseSelectorSearchIndex.value = []
+  diseaseSelectorSearchResults.value = []
+  diseaseSelectorSearchPerformed.value = false
+}
+
+const sanitizeDiseaseCategoryCode = (value) => String(value || '').replace(/[^A-Za-z0-9_-]+/g, '_')
+
+const buildDiseaseSelectorSearchText = (item) => [
+  item.label,
+  item.diseaseName,
+  item.englishName,
+  item.standardCode,
+  item.conceptCode,
+  item.categoryCode,
+  item.categoryName,
+  item.initials,
+  ...(item.aliases || []),
+].filter(Boolean).join(' ').toLowerCase()
+
+const enrichDiseaseSelectorNode = (item) => ({
+  ...item,
+  nodeKey: item.conceptCode,
+  nodeType: 'DISEASE',
+  disabled: false,
+  leaf: true,
+  searchText: buildDiseaseSelectorSearchText(item),
+})
+
+const loadDiseaseSelectorCategoryChildren = async (categoryCode) => {
+  if (!categoryCode) {
+    return []
+  }
+  if (diseaseSelectorCategoryChildrenCache.has(categoryCode)) {
+    return diseaseSelectorCategoryChildrenCache.get(categoryCode)
+  }
+  const children = await loadMedicalStandardJson(`categories/${sanitizeDiseaseCategoryCode(categoryCode)}.json`)
+  const safeChildren = markRaw((Array.isArray(children) ? children : []).map(enrichDiseaseSelectorNode))
+  diseaseSelectorCategoryChildrenCache.set(categoryCode, safeChildren)
+  return safeChildren
+}
+
+const loadDiseaseSelectorSearchIndex = async () => {
+  if (diseaseSelectorSearchIndex.value.length) {
+    return diseaseSelectorSearchIndex.value
+  }
+  const groups = await Promise.all(diseaseSelectorCategories.value.map((category) => loadDiseaseSelectorCategoryChildren(category.categoryCode)))
+  diseaseSelectorSearchIndex.value = markRaw(groups.flat())
+  return diseaseSelectorSearchIndex.value
+}
+
+const searchDiseaseSelectorTree = async () => {
+  if (!diseaseSelectorCategories.value.length) {
+    return
+  }
+  const tokens = normalizedDiseaseSelectorKeyword.value
+    .split(/[\s,，;；、]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+  if (!tokens.length) {
+    diseaseSelectorSearchPerformed.value = false
+    diseaseSelectorSearchResults.value = []
+    diseaseSelectorTreeVersion.value += 1
+    await nextTick()
+    syncDiseaseSelectorCheckedState()
+    return
+  }
+  diseaseSelectorSearchLoading.value = true
+  diseaseSelectorSearchPerformed.value = true
+  try {
+    const index = await loadDiseaseSelectorSearchIndex()
+    diseaseSelectorSearchResults.value = markRaw(index
+      .filter((item) => tokens.every((token) => item.searchText.includes(token)))
+      .slice(0, 180))
+    diseaseSelectorTreeVersion.value += 1
+    await nextTick()
+    syncDiseaseSelectorCheckedState()
+  } catch (error) {
+    console.error('检索疾病树失败:', error)
+    diseaseSelectorSearchResults.value = []
+    ElMessage.error(resolveAxiosErrorMessage(error, '疾病检索失败。'))
+  } finally {
+    diseaseSelectorSearchLoading.value = false
+  }
+}
+
+const loadDiseaseMappings = async (hash) => {
+  if (!hash) {
+    diseaseMappings.value = []
+    diseaseMappingSelectedCodes.value = []
+    savedDiseaseMappingCodes.value = []
+    return
+  }
+  const requestedHash = hash
+  diseaseMappingLoading.value = true
+  try {
+    const { data } = await apiClient.get('/api/aimed/admin/medical-standards/knowledge/mappings', {
+      params: { hash: requestedHash },
+    })
+    if (selectedHash.value === requestedHash) {
+      diseaseMappings.value = Array.isArray(data) ? data : []
+      diseaseMappingSelectedCodes.value = diseaseMappings.value.map((item) => item.conceptCode).filter(Boolean)
+      savedDiseaseMappingCodes.value = [...diseaseMappingSelectedCodes.value]
+      await nextTick()
+      syncDiseaseSelectorCheckedState()
+    }
+  } catch (error) {
+    console.error('加载文档关联疾病失败:', error)
+    if (selectedHash.value === requestedHash) {
+      ElMessage.error(resolveAxiosErrorMessage(error, '文档关联疾病加载失败。'))
+    }
+  } finally {
+    if (selectedHash.value === requestedHash) {
+      diseaseMappingLoading.value = false
+    }
+  }
+}
+
+const saveDiseaseMappings = async (hash) => {
+  if (!hash) {
+    return
+  }
+  diseaseMappingSaving.value = true
+  try {
+    const { data } = await apiClient.put('/api/aimed/admin/medical-standards/knowledge/mappings', {
+      hash,
+      conceptCodes: diseaseMappingSelectedCodes.value,
+    })
+    diseaseMappings.value = Array.isArray(data) ? data : []
+    diseaseMappingSelectedCodes.value = diseaseMappings.value.map((item) => item.conceptCode).filter(Boolean)
+    savedDiseaseMappingCodes.value = [...diseaseMappingSelectedCodes.value]
+    await nextTick()
+    syncDiseaseSelectorCheckedState()
+    ElMessage.success('关联疾病已保存。')
+  } catch (error) {
+    console.error('保存文档关联疾病失败:', error)
+    ElMessage.error(resolveAxiosErrorMessage(error, '关联疾病保存失败，请重试。'))
+  } finally {
+    diseaseMappingSaving.value = false
+  }
+}
+
+const loadKnowledgeDiseaseTreeNode = async (node, resolve) => {
+  if (node.level === 0) {
+    resolve(diseaseSelectorCategories.value)
+    return
+  }
+  const item = node.data
+  const children = item?.nodeType === 'CATEGORY' ? await loadDiseaseSelectorCategoryChildren(item.categoryCode) : []
+  resolve(children)
+  nextTick(() => {
+    syncDiseaseSelectorCheckedState()
+  })
+}
+
+const handleKnowledgeDiseaseNodeClick = async (item, node) => {
+  if (item?.nodeType === 'CATEGORY') {
+    if (isDiseaseSelectorSearchMode.value) {
+      node.expanded ? node.collapse() : node.expand()
+      return
+    }
+    if (node.expanded) {
+      node.collapse()
+      return
+    }
+    node.expand(() => {
+      nextTick(() => {
+        if (!node.expanded) {
+          node.expanded = true
+        }
+        syncDiseaseSelectorCheckedState()
+      })
+    }, true)
+    return
+  }
+  if (item?.nodeType !== 'DISEASE') {
+    return
+  }
+  const tree = diseaseSelectorTreeRef.value
+  if (!tree) {
+    return
+  }
+  const checkedKeys = new Set(tree.getCheckedKeys(false))
+  const nextChecked = !checkedKeys.has(item.conceptCode)
+  tree.setChecked(item, nextChecked, false)
+  handleKnowledgeDiseaseTreeCheck()
+}
+
+const handleKnowledgeDiseaseTreeCheck = () => {
+  const tree = diseaseSelectorTreeRef.value
+  if (!tree) {
+    return
+  }
+  const visibleDiseaseNodes = flattenDiseaseSelectorNodes(diseaseSelectorTreeData.value)
+  const visibleCodes = new Set(visibleDiseaseNodes.map((item) => item.conceptCode).filter(Boolean))
+  const checkedNodes = tree.getCheckedNodes(false, true).filter((item) => item?.nodeType === 'DISEASE')
+  const existingByCode = new Map(diseaseMappings.value.map((item) => [item.conceptCode, item]))
+  const retainedMappings = diseaseMappings.value.filter((item) => !visibleCodes.has(item.conceptCode))
+  const visibleMappings = checkedNodes.map((item) => ({
+    id: existingByCode.get(item.conceptCode)?.id || null,
+    knowledgeHash: selectedDetail.value?.hash || '',
+    conceptCode: item.conceptCode,
+    standardCode: item.standardCode || existingByCode.get(item.conceptCode)?.standardCode || null,
+    diseaseTitle: item.diseaseName || item.label || existingByCode.get(item.conceptCode)?.diseaseTitle || null,
+    matchSource: existingByCode.get(item.conceptCode)?.matchSource || 'MANUAL',
+    confidence: existingByCode.get(item.conceptCode)?.confidence ?? 1,
+  }))
+  diseaseMappings.value = [...retainedMappings, ...visibleMappings]
+  diseaseMappingSelectedCodes.value = diseaseMappings.value.map((item) => item.conceptCode).filter(Boolean)
+}
+
+const syncDiseaseSelectorCheckedState = () => {
+  const tree = diseaseSelectorTreeRef.value
+  if (!tree) {
+    return
+  }
+  tree.setCheckedKeys(diseaseMappingSelectedCodes.value, false)
+}
+
+const clearSelectedDiseases = () => {
+  diseaseMappings.value = []
+  diseaseMappingSelectedCodes.value = []
+  syncDiseaseSelectorCheckedState()
+}
+
+const removeSelectedDisease = (conceptCode) => {
+  if (!conceptCode) {
+    return
+  }
+  diseaseMappingSelectedCodes.value = diseaseMappingSelectedCodes.value.filter((code) => code !== conceptCode)
+  diseaseMappings.value = diseaseMappings.value.filter((item) => item.conceptCode !== conceptCode)
+  syncDiseaseSelectorCheckedState()
+}
+
+const handleDiseaseDragStart = (conceptCode) => {
+  draggedDiseaseCode.value = conceptCode || ''
+}
+
+const handleDiseaseDragOver = (conceptCode) => {
+  if (!draggedDiseaseCode.value || draggedDiseaseCode.value === conceptCode) {
+    return
+  }
+}
+
+const handleDiseaseDrop = (targetConceptCode) => {
+  const sourceConceptCode = draggedDiseaseCode.value
+  if (!sourceConceptCode || !targetConceptCode || sourceConceptCode === targetConceptCode) {
+    draggedDiseaseCode.value = ''
+    return
+  }
+  const nextMappings = [...diseaseMappings.value]
+  const sourceIndex = nextMappings.findIndex((item) => item.conceptCode === sourceConceptCode)
+  const targetIndex = nextMappings.findIndex((item) => item.conceptCode === targetConceptCode)
+  if (sourceIndex < 0 || targetIndex < 0) {
+    draggedDiseaseCode.value = ''
+    return
+  }
+  const [movedItem] = nextMappings.splice(sourceIndex, 1)
+  nextMappings.splice(targetIndex, 0, movedItem)
+  diseaseMappings.value = nextMappings
+  diseaseMappingSelectedCodes.value = nextMappings.map((item) => item.conceptCode).filter(Boolean)
+  draggedDiseaseCode.value = ''
+}
+
+const handleDiseaseDragEnd = () => {
+  draggedDiseaseCode.value = ''
+}
+
+const flattenDiseaseSelectorNodes = (nodes) => {
+  const result = []
+  const visit = (items) => {
+    const safeItems = Array.isArray(items) ? items : []
+    safeItems.forEach((item) => {
+      if (item?.nodeType === 'DISEASE') {
+        result.push(item)
+      }
+      if (Array.isArray(item?.children) && item.children.length) {
+        visit(item.children)
+      }
+    })
+  }
+  visit(nodes)
+  return result
+}
+
+const normalizeDiseaseConceptCodes = (conceptCodes) => {
+  if (!conceptCodes?.length) {
+    return []
+  }
+  return [...new Set(conceptCodes.filter(Boolean).map((item) => String(item).trim()))].sort()
 }
 
 const toggleDetailSection = (key) => {
@@ -2106,6 +2650,337 @@ const toLocalDateTimeInput = (value) => {
   grid-column: 1 / -1;
 }
 
+.metadata-disease-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(91, 145, 149, 0.14);
+  border-radius: 18px;
+  background: rgba(242, 249, 249, 0.82);
+}
+
+.metadata-disease-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.metadata-disease-head div:first-child {
+  display: grid;
+  gap: 5px;
+}
+
+.metadata-disease-head strong {
+  color: #173b41;
+  font-size: 15px;
+}
+
+.metadata-disease-head span,
+.metadata-disease-empty {
+  color: #6b8b91;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.metadata-disease-actions,
+.metadata-disease-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.metadata-disease-count {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(228, 244, 243, 0.96);
+  color: #2f7075;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.metadata-disease-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+  gap: 12px;
+}
+
+.metadata-disease-picker,
+.metadata-disease-selected {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(91, 145, 149, 0.1);
+}
+
+.metadata-disease-hint,
+.metadata-disease-selected-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.metadata-disease-hint span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(228, 244, 243, 0.96);
+  color: #2f7075;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.metadata-disease-hint small,
+.metadata-disease-selected-head small {
+  color: #6b8b91;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.metadata-disease-selected-head strong {
+  color: #173b41;
+  font-size: 14px;
+}
+
+.metadata-disease-tree-shell {
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid rgba(91, 145, 149, 0.12);
+  border-radius: 16px;
+  background: rgba(245, 250, 250, 0.82);
+}
+
+.metadata-disease-tree {
+  background: transparent;
+  color: #204d55;
+}
+
+.metadata-disease-tree :deep(.el-tree-node__content) {
+  position: relative;
+  min-height: 42px;
+  height: auto;
+  margin: 2px 0;
+  padding: 4px 6px;
+  border-radius: 12px;
+  transition: background-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.metadata-disease-tree :deep(.el-tree-node__content:hover),
+.metadata-disease-tree :deep(.el-tree-node.is-current > .el-tree-node__content) {
+  background: rgba(232, 247, 246, 0.95);
+  box-shadow: inset 0 0 0 1px rgba(88, 170, 168, 0.16);
+}
+
+.metadata-disease-tree :deep(.el-tree-node.is-current > .el-tree-node__content::before) {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 7px;
+  bottom: 7px;
+  width: 4px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #4aa7a5, #66c0a8);
+}
+
+.metadata-disease-tree :deep(.el-tree-node__content:hover) {
+  transform: translateX(2px);
+}
+
+.metadata-disease-tree :deep(.el-tree-node__expand-icon) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-right: 5px;
+  border-radius: 999px;
+  background: rgba(232, 246, 246, 0.92);
+  color: #5d8f95;
+  transition: transform 180ms ease, background-color 180ms ease, color 180ms ease;
+}
+
+.metadata-disease-tree :deep(.el-tree-node__expand-icon.expanded) {
+  background: rgba(76, 166, 164, 0.14);
+  color: #2d6f76;
+  transform: rotate(90deg);
+}
+
+.metadata-disease-tree :deep(.el-tree-node__expand-icon.is-leaf) {
+  background: transparent;
+  color: transparent;
+}
+
+.metadata-disease-tree :deep(.el-tree-node__children) {
+  margin-left: 10px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(106, 178, 179, 0.16);
+}
+
+.knowledge-disease-tree-node {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+}
+
+.knowledge-disease-tree-main {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.knowledge-disease-tree-title-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.knowledge-disease-tree-title-row strong {
+  overflow: hidden;
+  color: #1d4d54;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge-disease-tree-main > span {
+  color: #6f9197;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.knowledge-disease-tree-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 19px;
+  padding: 0 7px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.knowledge-disease-tree-badge.category {
+  background: rgba(76, 166, 164, 0.14);
+  color: #2d6f76;
+}
+
+.knowledge-disease-tree-badge.disease {
+  background: rgba(98, 134, 201, 0.12);
+  color: #446a9c;
+}
+
+.metadata-disease-list {
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.metadata-disease-item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(91, 145, 149, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+}
+
+.metadata-disease-item.dragging {
+  opacity: 0.72;
+  transform: scale(0.99);
+}
+
+.metadata-disease-item:hover {
+  border-color: rgba(76, 166, 164, 0.22);
+  box-shadow: 0 12px 24px rgba(39, 105, 111, 0.06);
+}
+
+.metadata-disease-item div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.metadata-disease-item strong,
+.metadata-disease-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metadata-disease-item strong {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #173b41;
+  font-size: 14px;
+}
+
+.metadata-disease-item span,
+.metadata-disease-item small {
+  color: #6b8b91;
+  font-size: 12px;
+}
+
+.metadata-disease-item small {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.metadata-disease-remove {
+  min-height: 34px;
+  padding-inline: 10px;
+}
+
+.metadata-disease-item-actions {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.metadata-disease-drag-handle,
+.metadata-disease-priority {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.metadata-disease-drag-handle {
+  background: rgba(238, 247, 246, 0.92);
+  color: #5d858b;
+  cursor: grab;
+}
+
+.metadata-disease-priority {
+  background: rgba(76, 166, 164, 0.14);
+  color: #2d6f76;
+  flex: 0 0 auto;
+}
+
 .content-card {
   padding: 14px 16px;
   border-radius: 20px;
@@ -2274,6 +3149,14 @@ const toLocalDateTimeInput = (value) => {
     grid-template-columns: 1fr;
   }
 
+  .metadata-disease-body {
+    grid-template-columns: 1fr;
+  }
+
+  .metadata-disease-list {
+    max-height: none;
+  }
+
   .dept-tree-popover {
     position: static;
   }
@@ -2359,19 +3242,41 @@ const toLocalDateTimeInput = (value) => {
   .detail-toolbar,
   .detail-badges,
   .detail-actions,
+  .metadata-disease-head,
   .progress-card-head,
   .chunk-item summary {
     flex-direction: column;
     align-items: flex-start;
   }
 
-  .detail-actions {
+  .detail-actions,
+  .metadata-disease-actions {
     width: 100%;
   }
 
-  .detail-actions .slim-button,
-  .detail-actions .danger-button {
+  .metadata-disease-count {
     width: 100%;
+    justify-content: center;
+  }
+
+  .detail-actions .slim-button,
+  .detail-actions .danger-button,
+  .metadata-disease-actions .slim-button {
+    width: 100%;
+  }
+
+  .knowledge-disease-tree-title-row {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .knowledge-disease-tree-title-row strong {
+    font-size: 12px;
+    white-space: normal;
+  }
+
+  .knowledge-disease-tree-main > span {
+    font-size: 10.5px;
   }
 
   .content-card {

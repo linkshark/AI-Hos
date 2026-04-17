@@ -1,7 +1,7 @@
 package com.linkjb.aimed.service;
 
-import com.linkjb.aimed.bean.chat.ChatHistoryMessageResponse;
-import com.linkjb.aimed.bean.chat.ChatVisibleHistoryDocument;
+import com.linkjb.aimed.entity.dto.response.chat.ChatHistoryMessageResponse;
+import com.linkjb.aimed.entity.document.chat.ChatVisibleHistoryDocument;
 import com.linkjb.aimed.entity.ChatSessionOwner;
 import com.linkjb.aimed.store.MongoVisibleChatHistoryStore.VisibleHistorySummary;
 import org.springframework.util.StringUtils;

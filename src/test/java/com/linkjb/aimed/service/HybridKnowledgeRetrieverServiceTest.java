@@ -1,6 +1,9 @@
 package com.linkjb.aimed.service;
 
-import com.linkjb.aimed.bean.KnowledgeRetrievalDiagnosticResponse;
+import com.linkjb.aimed.entity.dto.response.knowledge.retrieval.KnowledgeRetrievalDiagnosticResponse;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.rag.query.Metadata;
+import dev.langchain4j.rag.query.Query;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
@@ -57,6 +60,8 @@ class HybridKnowledgeRetrieverServiceTest {
         assertEquals("hybrid", response.finalHits().get(0).retrievalType());
         assertFalse(response.scoringRules().isEmpty());
         assertFalse(response.finalHits().get(0).scoreBreakdown().isEmpty());
+        assertEquals(response.normalizedQuery(), response.effectiveQuery());
+        assertTrue(response.matchedDiseaseEntities().isEmpty());
     }
 
     @Test
@@ -159,6 +164,34 @@ class HybridKnowledgeRetrieverServiceTest {
         assertEquals("原发性肝癌指南_2024.pdf", summary.finalHits().get(0).documentName());
         assertTrue(summary.finalHits().get(0).scoreBreakdown().stream()
                 .anyMatch(score -> "core_phrase".equals(score.key())));
+    }
+
+    @Test
+    void shouldConsumeSummaryByMemoryIdAndCurrentRawQuery() {
+        JdbcTemplate jdbcTemplate = new FallbackJdbcTemplate();
+        EmbeddingStore<TextSegment> embeddingStore = new EmptyEmbeddingStore();
+        EmbeddingModel embeddingModel = segments -> Response.from(List.of(Embedding.from(new float[]{0.2f, 0.3f})));
+
+        HybridKnowledgeRetrieverService service = new HybridKnowledgeRetrieverService(
+                jdbcTemplate,
+                embeddingStore,
+                embeddingModel,
+                8, 8, 6, 0.35, 4
+        );
+        UserMessage currentMessage = UserMessage.from("当前问题");
+
+        service.retrieve(Query.from("我感冒咳嗽了怎么办", Metadata.from(currentMessage, 1001L, List.of())),
+                HybridKnowledgeRetrieverService.RetrievalProfile.ONLINE);
+        service.retrieve(Query.from("早期肝癌怎么治疗", Metadata.from(currentMessage, 1001L, List.of())),
+                HybridKnowledgeRetrieverService.RetrievalProfile.ONLINE);
+
+        HybridKnowledgeRetrieverService.RetrievalSummary liverSummary =
+                service.consumeLastSummary(1001L, "早期肝癌怎么治疗");
+        HybridKnowledgeRetrieverService.RetrievalSummary coldSummary =
+                service.consumeLastSummary(1001L, "我感冒咳嗽了怎么办");
+
+        assertEquals("早期肝癌怎么治疗", liverSummary.rewriteInfo().rawQuery());
+        assertEquals("我感冒咳嗽了怎么办", coldSummary.rewriteInfo().rawQuery());
     }
 
     private static final class StubJdbcTemplate extends JdbcTemplate {

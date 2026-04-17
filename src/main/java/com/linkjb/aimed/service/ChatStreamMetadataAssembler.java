@@ -2,8 +2,8 @@ package com.linkjb.aimed.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.linkjb.aimed.bean.chat.ChatStreamMetadata;
-import com.linkjb.aimed.bean.chat.ChatTraceStage;
+import com.linkjb.aimed.entity.dto.response.chat.ChatStreamMetadata;
+import com.linkjb.aimed.entity.dto.response.chat.ChatTraceStage;
 import org.slf4j.Logger;
 import org.springframework.util.StringUtils;
 
@@ -50,11 +50,16 @@ final class ChatStreamMetadataAssembler {
                                         boolean hasAttachments,
                                         long firstTokenLatencyMs,
                                         String toolMode,
+                                        ChatIntentAnalysisService.ChatIntentResult intentResult,
                                         HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary) {
         ChatStreamMetadata metadata = hybridKnowledgeRetrieverService.toChatStreamMetadata(retrievalSummary);
         metadata.setTraceId(traceId);
         metadata.setProvider(provider);
         metadata.setToolMode(toolMode);
+        metadata.setIntentType(intentResult == null ? "UNKNOWN" : intentResult.intentType());
+        metadata.setRouteTarget(intentResult == null ? "UNKNOWN" : intentResult.routeTarget());
+        metadata.setRagApplied(intentResult == null || intentResult.ragRequired());
+        metadata.setRagSkipReason(intentResult == null ? "" : intentResult.ragSkipReason());
         metadata.setServerDurationMs(durationMs(requestStartedAt));
         metadata.setFirstTokenLatencyMs(Math.max(0, firstTokenLatencyMs));
         metadata.setTraceStages(buildTraceStages(
@@ -63,6 +68,7 @@ final class ChatStreamMetadataAssembler {
                 attachmentPreparationMs,
                 hasAttachments,
                 firstTokenLatencyMs,
+                intentResult,
                 retrievalSummary,
                 metadata
         ));
@@ -89,9 +95,21 @@ final class ChatStreamMetadataAssembler {
                                                   long attachmentPreparationMs,
                                                   boolean hasAttachments,
                                                   long firstTokenLatencyMs,
+                                                  ChatIntentAnalysisService.ChatIntentResult intentResult,
                                                   HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary,
                                                   ChatStreamMetadata metadata) {
         List<ChatTraceStage> stages = new ArrayList<>();
+        if (intentResult != null) {
+            stages.add(new ChatTraceStage(
+                    "intent_analysis",
+                    "意图分析",
+                    0,
+                    "DONE",
+                    intentResult.intentType()
+                            + " / " + intentResult.routeTarget()
+                            + " / RAG " + (intentResult.ragRequired() ? "执行" : "跳过")
+            ));
+        }
         if (attachmentPreparationMs > 0) {
             stages.add(new ChatTraceStage(
                     "attachments",
@@ -102,6 +120,15 @@ final class ChatStreamMetadataAssembler {
             ));
         }
         if (retrievalSummary != null) {
+            if (retrievalSummary.rewriteInfo() != null && retrievalSummary.rewriteInfo().rewriteApplied()) {
+                stages.add(new ChatTraceStage(
+                        "query_rewrite",
+                        "Query 改写",
+                        retrievalSummary.rewriteInfo().durationMs(),
+                        "DONE",
+                        "effectiveQuery=" + retrievalSummary.rewriteInfo().effectiveQuery()
+                ));
+            }
             HybridKnowledgeRetrieverService.RetrievalTimings timings = retrievalSummary.timings();
             stages.add(new ChatTraceStage(
                     "retrieve",
@@ -125,6 +152,15 @@ final class ChatStreamMetadataAssembler {
                 stages.add(new ChatTraceStage("retrieve_merge", "结果合并", timings.mergeDurationMs(), "DONE",
                         "merged=" + retrievalSummary.mergedCount()));
             }
+        }
+        if (retrievalSummary == null && intentResult != null && !intentResult.ragRequired()) {
+            stages.add(new ChatTraceStage(
+                    "retrieve",
+                    "知识检索",
+                    0,
+                    "SKIPPED",
+                    intentResult.ragSkipReason()
+            ));
         }
         long normalizedFirstTokenLatencyMs = Math.max(0, firstTokenLatencyMs);
         long retrievalDurationMs = retrievalSummary == null ? 0 : retrievalSummary.durationMs();

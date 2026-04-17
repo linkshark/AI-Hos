@@ -4,13 +4,9 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.linkjb.aimed.entity.KnowledgeChunkIndex;
 import com.linkjb.aimed.mapper.KnowledgeChunkIndexMapper;
-import org.springframework.jdbc.core.BatchPreparedStatementSetter;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
-import java.sql.PreparedStatement;
-import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.util.List;
 
@@ -18,12 +14,9 @@ import java.util.List;
 public class KnowledgeChunkIndexService {
 
     private final KnowledgeChunkIndexMapper knowledgeChunkIndexMapper;
-    private final JdbcTemplate jdbcTemplate;
 
-    public KnowledgeChunkIndexService(KnowledgeChunkIndexMapper knowledgeChunkIndexMapper,
-                                      JdbcTemplate jdbcTemplate) {
+    public KnowledgeChunkIndexService(KnowledgeChunkIndexMapper knowledgeChunkIndexMapper) {
         this.knowledgeChunkIndexMapper = knowledgeChunkIndexMapper;
-        this.jdbcTemplate = jdbcTemplate;
     }
 
     public List<KnowledgeChunkIndex> listByHash(String hash) {
@@ -100,42 +93,26 @@ public class KnowledgeChunkIndexService {
         final int batchSize = 200;
         for (int start = 0; start < chunks.size(); start += batchSize) {
             int end = Math.min(start + batchSize, chunks.size());
-            List<KnowledgeChunkIndex> batch = chunks.subList(start, end);
-            jdbcTemplate.batchUpdate("""
-                            INSERT INTO knowledge_chunk_index
-                            (file_hash, segment_id, segment_index, content, preview, character_count, embedding,
-                             title, doc_type, department, audience, version, effective_at, status, doctor_name,
-                             source_priority, keywords)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                    new BatchPreparedStatementSetter() {
-                        @Override
-                        public void setValues(PreparedStatement ps, int i) throws SQLException {
-                            KnowledgeChunkIndex chunk = batch.get(i);
-                            ps.setString(1, chunk.getFileHash());
-                            ps.setString(2, chunk.getSegmentId());
-                            ps.setInt(3, chunk.getSegmentIndex() == null ? 0 : chunk.getSegmentIndex());
-                            ps.setString(4, chunk.getContent());
-                            ps.setString(5, chunk.getPreview());
-                            ps.setInt(6, chunk.getCharacterCount() == null ? 0 : chunk.getCharacterCount());
-                            ps.setString(7, chunk.getEmbedding());
-                            ps.setString(8, chunk.getTitle());
-                            ps.setString(9, chunk.getDocType());
-                            ps.setString(10, chunk.getDepartment());
-                            ps.setString(11, chunk.getAudience());
-                            ps.setString(12, chunk.getVersion());
-                            ps.setTimestamp(13, chunk.getEffectiveAt() == null ? null : java.sql.Timestamp.valueOf(chunk.getEffectiveAt()));
-                            ps.setString(14, chunk.getStatus());
-                            ps.setString(15, chunk.getDoctorName());
-                            ps.setInt(16, chunk.getSourcePriority() == null ? 50 : chunk.getSourcePriority());
-                            ps.setString(17, chunk.getKeywords());
-                        }
-
-                        @Override
-                        public int getBatchSize() {
-                            return batch.size();
-                        }
-                    });
+            List<KnowledgeChunkIndex> batch = chunks.subList(start, end).stream()
+                    .map(this::normalizeChunk)
+                    .toList();
+            knowledgeChunkIndexMapper.batchInsert(batch);
         }
+    }
+
+    private KnowledgeChunkIndex normalizeChunk(KnowledgeChunkIndex chunk) {
+        if (chunk == null) {
+            return null;
+        }
+        if (chunk.getSegmentIndex() == null) {
+            chunk.setSegmentIndex(0);
+        }
+        if (chunk.getCharacterCount() == null) {
+            chunk.setCharacterCount(0);
+        }
+        if (chunk.getSourcePriority() == null) {
+            chunk.setSourcePriority(50);
+        }
+        return chunk;
     }
 }

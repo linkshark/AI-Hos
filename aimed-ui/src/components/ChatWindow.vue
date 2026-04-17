@@ -454,6 +454,9 @@
                     </div>
                     <small class="message-trace-meta">
                       <span v-if="message.provider">{{ message.provider }}</span>
+                      <span v-if="message.intentType">意图 {{ message.intentType }}</span>
+                      <span v-if="message.routeTarget">路由 {{ message.routeTarget }}</span>
+                      <span>{{ message.ragApplied ? 'RAG 已执行' : 'RAG 已跳过' }}</span>
                       <span v-if="message.firstTokenLatencyMs > 0">首字 {{ formatTraceDuration(message.firstTokenLatencyMs) }}</span>
                       <span v-if="message.traceId">traceId {{ shortenInlineTraceId(message.traceId) }}</span>
                     </small>
@@ -1198,6 +1201,10 @@ const applyStreamMetadata = (message, metadata) => {
   message.traceId = metadata?.traceId || ''
   message.provider = metadata?.provider || ''
   message.toolMode = metadata?.toolMode || ''
+  message.intentType = metadata?.intentType || ''
+  message.routeTarget = metadata?.routeTarget || ''
+  message.ragApplied = Boolean(metadata?.ragApplied)
+  message.ragSkipReason = metadata?.ragSkipReason || ''
   message.serverDurationMs = Number(metadata?.serverDurationMs || 0)
   message.firstTokenLatencyMs = Number(metadata?.firstTokenLatencyMs || 0)
   message.traceStages = Array.isArray(metadata?.traceStages) ? metadata.traceStages.map(normalizeTraceStage) : []
@@ -1552,6 +1559,10 @@ const mapHistoryMessageToViewMessage = (message) => ({
   traceId: '',
   provider: '',
   toolMode: '',
+  intentType: '',
+  routeTarget: '',
+  ragApplied: false,
+  ragSkipReason: '',
   serverDurationMs: 0,
   firstTokenLatencyMs: 0,
   traceStages: [],
@@ -2403,6 +2414,10 @@ const sendRequest = (message) => {
     traceId: '',
     provider: '',
     toolMode: '',
+    intentType: '',
+    routeTarget: '',
+    ragApplied: false,
+    ragSkipReason: '',
     serverDurationMs: 0,
     firstTokenLatencyMs: 0,
     traceStages: [],

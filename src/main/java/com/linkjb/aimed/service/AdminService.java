@@ -1,10 +1,10 @@
 package com.linkjb.aimed.service;
 
-import com.linkjb.aimed.bean.AdminCreateDoctorRequest;
-import com.linkjb.aimed.bean.AdminUpdateUserRoleRequest;
-import com.linkjb.aimed.bean.AdminUpdateUserStatusRequest;
-import com.linkjb.aimed.bean.AdminUserItem;
-import com.linkjb.aimed.bean.PagedResponse;
+import com.linkjb.aimed.entity.dto.request.AdminCreateDoctorRequest;
+import com.linkjb.aimed.entity.dto.request.AdminUpdateUserRoleRequest;
+import com.linkjb.aimed.entity.dto.request.AdminUpdateUserStatusRequest;
+import com.linkjb.aimed.entity.vo.AdminUserItem;
+import com.linkjb.aimed.entity.dto.response.PagedResponse;
 import com.linkjb.aimed.entity.AppUser;
 import com.linkjb.aimed.security.AuthenticatedUser;
 import org.springframework.http.HttpStatus;

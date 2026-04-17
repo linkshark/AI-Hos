@@ -1,9 +1,9 @@
 package com.linkjb.aimed.service;
 
-import com.linkjb.aimed.bean.KnowledgeMetadataBackfillRequest;
-import com.linkjb.aimed.bean.KnowledgeMetadataBackfillResponse;
-import com.linkjb.aimed.bean.KnowledgeRetrievalDiagnosticRequest;
-import com.linkjb.aimed.bean.KnowledgeRetrievalDiagnosticResponse;
+import com.linkjb.aimed.entity.dto.request.KnowledgeMetadataBackfillRequest;
+import com.linkjb.aimed.entity.dto.response.KnowledgeMetadataBackfillResponse;
+import com.linkjb.aimed.entity.dto.request.knowledge.retrieval.KnowledgeRetrievalDiagnosticRequest;
+import com.linkjb.aimed.entity.dto.response.knowledge.retrieval.KnowledgeRetrievalDiagnosticResponse;
 import org.springframework.stereotype.Service;
 
 @Service

@@ -1,8 +1,8 @@
 package com.linkjb.aimed.controller;
 
-import com.linkjb.aimed.bean.mcp.McpServerItem;
-import com.linkjb.aimed.bean.mcp.McpServerRequest;
-import com.linkjb.aimed.bean.mcp.McpServerTestResponse;
+import com.linkjb.aimed.entity.vo.mcp.McpServerItem;
+import com.linkjb.aimed.entity.dto.request.mcp.McpServerRequest;
+import com.linkjb.aimed.entity.dto.response.mcp.McpServerTestResponse;
 import com.linkjb.aimed.security.AuthenticatedUser;
 import com.linkjb.aimed.service.McpServerAdminService;
 import io.swagger.v3.oas.annotations.Operation;

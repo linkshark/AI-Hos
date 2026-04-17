@@ -1,6 +1,6 @@
 package com.linkjb.aimed.service;
 
-import com.linkjb.aimed.bean.KnowledgeMetadataBackfillFieldChange;
+import com.linkjb.aimed.entity.vo.KnowledgeMetadataBackfillFieldChange;
 import com.linkjb.aimed.entity.KnowledgeFileStatus;
 import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.segment.TextSegment;

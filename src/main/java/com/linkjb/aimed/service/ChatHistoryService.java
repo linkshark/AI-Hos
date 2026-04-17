@@ -1,12 +1,12 @@
 package com.linkjb.aimed.service;
 
-import com.linkjb.aimed.bean.KnowledgeCitationItem;
-import com.linkjb.aimed.bean.PagedResponse;
-import com.linkjb.aimed.bean.chat.ChatHistoryAttachmentResponse;
-import com.linkjb.aimed.bean.chat.ChatHistoryDetailResponse;
-import com.linkjb.aimed.bean.chat.ChatHistoryItemResponse;
-import com.linkjb.aimed.bean.chat.ChatHistoryMessageResponse;
-import com.linkjb.aimed.bean.chat.ChatVisibleHistoryDocument;
+import com.linkjb.aimed.entity.vo.KnowledgeCitationItem;
+import com.linkjb.aimed.entity.dto.response.PagedResponse;
+import com.linkjb.aimed.entity.dto.response.chat.ChatHistoryAttachmentResponse;
+import com.linkjb.aimed.entity.dto.response.chat.ChatHistoryDetailResponse;
+import com.linkjb.aimed.entity.dto.response.chat.ChatHistoryItemResponse;
+import com.linkjb.aimed.entity.dto.response.chat.ChatHistoryMessageResponse;
+import com.linkjb.aimed.entity.document.chat.ChatVisibleHistoryDocument;
 import com.linkjb.aimed.entity.ChatSessionOwner;
 import com.linkjb.aimed.store.MongoChatMemoryStore;
 import com.linkjb.aimed.store.MongoVisibleChatHistoryStore;

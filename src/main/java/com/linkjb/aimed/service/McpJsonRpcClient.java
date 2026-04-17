@@ -3,10 +3,10 @@ package com.linkjb.aimed.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.linkjb.aimed.bean.mcp.McpServerHeaderItem;
-import com.linkjb.aimed.bean.mcp.McpServerItem;
-import com.linkjb.aimed.bean.mcp.McpServerTestResponse;
-import com.linkjb.aimed.bean.mcp.McpServerToolItem;
+import com.linkjb.aimed.entity.vo.mcp.McpServerHeaderItem;
+import com.linkjb.aimed.entity.vo.mcp.McpServerItem;
+import com.linkjb.aimed.entity.dto.response.mcp.McpServerTestResponse;
+import com.linkjb.aimed.entity.vo.mcp.McpServerToolItem;
 import org.springframework.http.HttpStatus;
 import org.springframework.util.StringUtils;
 import org.springframework.web.server.ResponseStatusException;
@@ -44,7 +44,7 @@ final class McpJsonRpcClient {
         }
         URI uri = URI.create(item.baseUrl());
         HttpClient client = buildClient(item);
-
+        // 管理台测试和 Agent 运行时都遵循 MCP 的最小闭环：先 initialize，再发送 initialized，最后读取 tools/list。
         JsonNode initializeResult = sendJsonRpcRequest(client, uri, item.headers(), item.connectTimeoutMs(),
                 "initialize",
                 Map.of(
@@ -53,7 +53,7 @@ final class McpJsonRpcClient {
                         "clientInfo", Map.of("name", "aihos-admin", "version", "1.0.0")
                 ));
 
-        // 管理台测试和 Agent 运行时都遵循 MCP 的最小闭环：先 initialize，再发送 initialized，最后读取 tools/list。
+
         sendJsonRpcNotification(client, uri, item.headers(), item.connectTimeoutMs(),
                 "notifications/initialized", Map.of());
 

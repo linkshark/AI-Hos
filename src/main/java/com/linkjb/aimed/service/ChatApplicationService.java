@@ -152,7 +152,23 @@ public class ChatApplicationService {
         log.info("chat.request provider={} memoryId={} chars={} attachments={}", provider, memoryId, textLength(message), fileCount(files));
         try {
             if (knowledgeBaseService.hasImageAttachments(files)) {
-                return visionChatService.analyzeStream(memoryId, message, files, provider);
+                ChatRuntimeTrace runtimeTrace = new ChatRuntimeTrace(
+                        traceIdProvider.currentTraceId(),
+                        provider,
+                        requestStartedAt,
+                        durationMs(requestStartedAt),
+                        fileCount(files) > 0
+                );
+                ChatIntentAnalysisService.ChatIntentResult visionIntentResult =
+                        new ChatIntentAnalysisService.ChatIntentResult("VISION_QA", "VISION", false,
+                                "图片问答走视觉模型，不触发知识库检索", "图片附件命中视觉问答链路", 0.95d);
+                runtimeTrace.setToolMode("VISION");
+                return withFluxLogs(provider, memoryId, visionChatService.analyzeStream(memoryId, message, files, provider), runtimeTrace)
+                        .concatWith(Flux.defer(() -> emitMetadataChunk(provider, memoryId, message, message, runtimeTrace, visionIntentResult)))
+                        .onErrorResume(error -> {
+                            log.error("chat.request.failed provider={} memoryId={} attachments={}", provider, memoryId, fileCount(files), error);
+                            return Flux.just(chatProviderPolicy.errorMessageForProvider(provider));
+                        });
             }
             String augmentedMessage = knowledgeBaseService.buildChatMessageWithAttachments(message, files);
             ChatRuntimeTrace runtimeTrace = new ChatRuntimeTrace(
@@ -209,7 +225,7 @@ public class ChatApplicationService {
         // 在线模型本身已经是 Flux，因此正文先自然流出，等流结束后再把检索摘要拼成一个 metadata 尾包。
         // 这样前端既能第一时间看到回答，也不会因为等引用而卡住首屏输出。
         return withFluxLogs(provider, memoryId, source, runtimeTrace)
-                .concatWith(Flux.defer(() -> emitMetadataChunk(provider, memoryId, summaryFallbackQuery, runtimeTrace, intentResult)));
+                .concatWith(Flux.defer(() -> emitMetadataChunk(provider, memoryId, message, summaryFallbackQuery, runtimeTrace, intentResult)));
     }
 
     private Flux<String> startLocalChat(String provider,
@@ -244,7 +260,13 @@ public class ChatApplicationService {
                         emitter.next(partial);
                     }))
                     .onCompleteResponse(tracedConsumer(requestTraceId, "chat.local.stream.complete", response -> {
-                        HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary = resolveRetrievalSummary(provider, memoryId, summaryFallbackQuery, intentResult);
+                        HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary = resolveRetrievalSummary(
+                                provider,
+                                memoryId,
+                                message,
+                                summaryFallbackQuery,
+                                intentResult
+                        );
                         ChatStreamMetadata metadata = buildStreamMetadata(runtimeTrace, intentResult, retrievalSummary);
                         logRetrievalSummary(provider, memoryId, retrievalSummary);
                         String finalText = finalResponseText(response);
@@ -278,10 +300,17 @@ public class ChatApplicationService {
 
     private Flux<String> emitMetadataChunk(String provider,
                                            Long memoryId,
+                                           String retrievalQuery,
                                            String summaryFallbackQuery,
                                            ChatRuntimeTrace runtimeTrace,
                                            ChatIntentAnalysisService.ChatIntentResult intentResult) {
-        HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary = resolveRetrievalSummary(provider, memoryId, summaryFallbackQuery, intentResult);
+        HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary = resolveRetrievalSummary(
+                provider,
+                memoryId,
+                retrievalQuery,
+                summaryFallbackQuery,
+                intentResult
+        );
         ChatStreamMetadata metadata = buildStreamMetadata(runtimeTrace, intentResult, retrievalSummary);
         logRetrievalSummary(provider, memoryId, retrievalSummary);
         String metadataChunk = chatMetadataService.encodeWithMarker(STREAM_METADATA_MARKER, metadata);
@@ -319,6 +348,7 @@ public class ChatApplicationService {
                 provider,
                 memoryId,
                 message,
+                message,
                 summaryFallbackQuery,
                 executionResult.toolResult(),
                 runtimeTrace,
@@ -329,6 +359,7 @@ public class ChatApplicationService {
     private Flux<String> summarizeMcpResult(String provider,
                                             Long memoryId,
                                             String originalMessage,
+                                            String retrievalQuery,
                                             String summaryFallbackQuery,
                                             String toolResult,
                                             ChatRuntimeTrace runtimeTrace,
@@ -336,11 +367,22 @@ public class ChatApplicationService {
         StreamingChatModel summaryModel = selectMcpSummaryModel(provider);
         String promptResource = selectPromptResource(provider);
         String summaryPrompt = buildMcpSummaryPrompt(originalMessage, toolResult);
-        return streamSummaryModel(provider, memoryId, summaryFallbackQuery, runtimeTrace, intentResult, summaryModel, promptResource, summaryPrompt);
+        return streamSummaryModel(
+                provider,
+                memoryId,
+                retrievalQuery,
+                summaryFallbackQuery,
+                runtimeTrace,
+                intentResult,
+                summaryModel,
+                promptResource,
+                summaryPrompt
+        );
     }
 
     private Flux<String> streamSummaryModel(String provider,
                                             Long memoryId,
+                                            String retrievalQuery,
                                             String summaryFallbackQuery,
                                             ChatRuntimeTrace runtimeTrace,
                                             ChatIntentAnalysisService.ChatIntentResult intentResult,
@@ -380,7 +422,13 @@ public class ChatApplicationService {
                 public void onCompleteResponse(ChatResponse response) {
                     tracedConsumer(requestTraceId, "chat.mcp.summary.complete", (ChatResponse completedResponse) -> {
                         runtimeTrace.recordMcpResult(durationMs(startedAt));
-                        HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary = resolveRetrievalSummary(provider, memoryId, summaryFallbackQuery, intentResult);
+                        HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary = resolveRetrievalSummary(
+                                provider,
+                                memoryId,
+                                retrievalQuery,
+                                summaryFallbackQuery,
+                                intentResult
+                        );
                         ChatStreamMetadata metadata = buildStreamMetadata(runtimeTrace, intentResult, retrievalSummary);
                         logRetrievalSummary(provider, memoryId, retrievalSummary);
                         String finalText = finalResponseText(completedResponse);
@@ -522,16 +570,22 @@ public class ChatApplicationService {
         return text == null ? 0 : text.length();
     }
 
-    private HybridKnowledgeRetrieverService.RetrievalSummary resolveRetrievalSummary(String provider,
-                                                                                     Long memoryId,
-                                                                                     String fallbackQuery,
-                                                                                     ChatIntentAnalysisService.ChatIntentResult intentResult) {
+    HybridKnowledgeRetrieverService.RetrievalSummary resolveRetrievalSummary(String provider,
+                                                                             Long memoryId,
+                                                                             String retrievalQuery,
+                                                                             String fallbackQuery,
+                                                                             ChatIntentAnalysisService.ChatIntentResult intentResult) {
         if (intentResult != null && !intentResult.ragRequired()) {
             return null;
         }
-        HybridKnowledgeRetrieverService.RetrievalSummary summary = hybridKnowledgeRetrieverService.consumeLastSummary(memoryId, fallbackQuery);
-        if (summary != null) {
-            return summary;
+        for (String candidateQuery : retrievalSummaryLookupQueries(retrievalQuery, fallbackQuery)) {
+            if (!StringUtils.hasText(candidateQuery)) {
+                continue;
+            }
+            HybridKnowledgeRetrieverService.RetrievalSummary summary = hybridKnowledgeRetrieverService.consumeLastSummary(memoryId, candidateQuery);
+            if (summary != null) {
+                return summary;
+            }
         }
         // 正常情况下，检索摘要会先写入显式的 summary store；
         // 只有在异常边界或本地模型特殊结束路径下，才需要这里兜底再查一次。
@@ -539,7 +593,19 @@ public class ChatApplicationService {
                 chatProviderPolicy.isOnlineProvider(provider)
                         ? HybridKnowledgeRetrieverService.RetrievalProfile.ONLINE
                         : HybridKnowledgeRetrieverService.RetrievalProfile.LOCAL;
-        return hybridKnowledgeRetrieverService.search(fallbackQuery, profile);
+        String effectiveQuery = StringUtils.hasText(retrievalQuery) ? retrievalQuery : fallbackQuery;
+        return hybridKnowledgeRetrieverService.search(effectiveQuery, profile);
+    }
+
+    List<String> retrievalSummaryLookupQueries(String retrievalQuery, String fallbackQuery) {
+        List<String> queries = new java.util.ArrayList<>(2);
+        if (StringUtils.hasText(retrievalQuery)) {
+            queries.add(retrievalQuery);
+        }
+        if (StringUtils.hasText(fallbackQuery) && !fallbackQuery.equals(retrievalQuery)) {
+            queries.add(fallbackQuery);
+        }
+        return queries;
     }
 
     public ChatStreamMetadata consumeCompletedStreamMetadata(String traceId) {

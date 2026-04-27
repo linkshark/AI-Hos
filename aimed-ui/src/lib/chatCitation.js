@@ -1,5 +1,28 @@
+const normalizeSnippetText = (value) => String(value || '').replace(/\s+/g, ' ').trim()
+
+const isUsefulSnippet = (value) => {
+  const text = normalizeSnippetText(value)
+  if (!text) {
+    return false
+  }
+  if (/^\d+$/.test(text) || /^第?\d+页$/.test(text)) {
+    return false
+  }
+  if (/^[\u4e00-\u9fa5A-Za-z0-9]{1,8}[：:]$/.test(text)) {
+    return false
+  }
+  return text.length >= 4 || /[，。；,.]/.test(text)
+}
+
+const citationSnippet = (citation) => {
+  const candidates = [citation?.snippet, citation?.excerpt, citation?.preview]
+  const matched = candidates.map(normalizeSnippetText).find(isUsefulSnippet)
+  return matched || ''
+}
+
 export const normalizeCitation = (citation) => ({
   ...citation,
+  snippet: citationSnippet(citation),
   retrievalTypeLabel:
     citation?.retrievalType === 'hybrid'
       ? '混合'

@@ -14,47 +14,99 @@ PORT="${DEPLOY_PORT:-13245}"
 USER_NAME="${DEPLOY_USER:-shark}"
 REMOTE_DIR="${DEPLOY_REMOTE_DIR:-/home/shark/AI-Hos}"
 CONFIG_FILE="${DEPLOY_CONFIG_FILE:-$ROOT_DIR/config/application-online.yml}"
+MYSQL_CONTAINER="${DEPLOY_MYSQL_CONTAINER:-aimed-mariadb}"
 if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "missing online yaml: $CONFIG_FILE" >&2
   echo "expected: $ROOT_DIR/config/application-online.yml" >&2
   exit 1
 fi
 
+command -v ruby >/dev/null 2>&1 || {
+  echo "ruby not found on local machine; this script uses ruby/psych to parse yaml" >&2
+  exit 1
+}
+command -v rsync >/dev/null 2>&1 || {
+  echo "rsync not found on local machine" >&2
+  exit 1
+}
+command -v ssh >/dev/null 2>&1 || {
+  echo "ssh not found on local machine" >&2
+  exit 1
+}
+
 echo "==> validate online config"
-python3 - "$CONFIG_FILE" <<'PY'
-import sys, yaml
-path = sys.argv[1]
-cfg = yaml.safe_load(open(path, 'r', encoding='utf-8')) or {}
+eval "$(
+  ruby - "$CONFIG_FILE" <<'RUBY'
+require "yaml"
+require "uri"
+require "shellwords"
 
-def require(value, label):
-    if not value:
-        raise SystemExit(f"invalid online yaml: missing {label}")
+path = ARGV.fetch(0)
+cfg = YAML.load_file(path) || {}
 
-app = cfg.get("app", {})
-spring = cfg.get("spring", {})
-require(app.get("chroma", {}).get("base-url"), "app.chroma.base-url")
-require(app.get("online-chat", {}).get("api-key"), "app.online-chat.api-key")
-require(app.get("embedding", {}).get("base-url"), "app.embedding.base-url")
-require(app.get("embedding", {}).get("model-name"), "app.embedding.model-name")
-require(app.get("vision-chat", {}).get("api-key"), "app.vision-chat.api-key")
-require(spring.get("datasource", {}).get("url"), "spring.datasource.url")
-require(spring.get("datasource", {}).get("username"), "spring.datasource.username")
-require(spring.get("datasource", {}).get("password"), "spring.datasource.password")
-require(spring.get("data", {}).get("mongodb", {}).get("uri"), "spring.data.mongodb.uri")
-require(spring.get("data", {}).get("redis", {}).get("host"), "spring.data.redis.host")
-require(spring.get("data", {}).get("redis", {}).get("password"), "spring.data.redis.password")
-require(spring.get("mail", {}).get("host"), "spring.mail.host")
-require(spring.get("mail", {}).get("username"), "spring.mail.username")
-require(spring.get("mail", {}).get("password"), "spring.mail.password")
-print("online yaml OK")
-PY
+def require_value(value, label)
+  raise "invalid online yaml: missing #{label}" if value.nil? || value.to_s.strip.empty?
+  value
+end
 
-EMBEDDING_MODEL_NAME="$(python3 - "$CONFIG_FILE" <<'PY'
-import sys, yaml
-cfg = yaml.safe_load(open(sys.argv[1], 'r', encoding='utf-8')) or {}
-print(((cfg.get("app") or {}).get("embedding") or {}).get("model-name") or "")
-PY
+app = cfg.fetch("app", {})
+spring = cfg.fetch("spring", {})
+spring_data = spring.fetch("data", {})
+
+chroma_url = require_value(app.dig("chroma", "base-url"), "app.chroma.base-url")
+online_api_key = require_value(app.dig("online-chat", "api-key"), "app.online-chat.api-key")
+embedding_base_url = require_value(app.dig("embedding", "base-url"), "app.embedding.base-url")
+embedding_model_name = require_value(app.dig("embedding", "model-name"), "app.embedding.model-name")
+vision_api_key = require_value(app.dig("vision-chat", "api-key"), "app.vision-chat.api-key")
+datasource_url = require_value(spring.dig("datasource", "url"), "spring.datasource.url")
+datasource_username = require_value(spring.dig("datasource", "username"), "spring.datasource.username")
+datasource_password = require_value(spring.dig("datasource", "password"), "spring.datasource.password")
+mongodb_uri = require_value(spring_data.dig("mongodb", "uri"), "spring.data.mongodb.uri")
+redis_host = require_value(spring_data.dig("redis", "host"), "spring.data.redis.host")
+redis_port = require_value(spring_data.dig("redis", "port"), "spring.data.redis.port")
+redis_password = require_value(spring_data.dig("redis", "password"), "spring.data.redis.password")
+mail_host = require_value(spring.dig("mail", "host"), "spring.mail.host")
+mail_username = require_value(spring.dig("mail", "username"), "spring.mail.username")
+mail_password = require_value(spring.dig("mail", "password"), "spring.mail.password")
+
+jdbc_uri = URI(datasource_url.sub(/^jdbc:/, ""))
+mongodb_main = mongodb_uri.sub(%r{^mongodb://}, "").split("/").first.to_s
+mongodb_host_port = mongodb_main.split("@").last.to_s
+mongo_host, mongo_port = mongodb_host_port.split(":", 2)
+chroma_uri = URI(chroma_url)
+
+db_name = jdbc_uri.path.to_s.sub(%r{^/}, "")
+mysql_host = jdbc_uri.host.to_s
+mysql_port = jdbc_uri.port.to_s
+mongo_port = mongo_port.to_s
+chroma_port = chroma_uri.port.to_s
+
+raise "invalid online yaml: unresolved spring.datasource database name" if db_name.empty?
+raise "invalid online yaml: unresolved spring.datasource port" if mysql_port.empty?
+raise "invalid online yaml: unresolved spring.data.mongodb port" if mongo_port.empty?
+raise "invalid online yaml: unresolved app.chroma.base-url port" if chroma_port.empty?
+
+{
+  "EMBEDDING_MODEL_NAME" => embedding_model_name,
+  "MYSQL_USERNAME" => datasource_username,
+  "MYSQL_PASSWORD" => datasource_password,
+  "MYSQL_DATABASE" => db_name,
+  "MYSQL_PORT" => mysql_port,
+  "MONGO_PORT" => mongo_port,
+  "REDIS_PORT" => redis_port.to_s,
+  "CHROMA_PORT" => chroma_port
+}.each do |key, value|
+  puts "#{key}=#{Shellwords.shellescape(value.to_s)}"
+end
+
+warn "online yaml OK"
+RUBY
 )"
+
+if [[ "${DEPLOY_VALIDATE_ONLY:-0}" == "1" ]]; then
+  echo "==> validate only; skip remote deploy"
+  exit 0
+fi
 
 CONTROL_PATH="$(mktemp -u "${TMPDIR:-/tmp}/aimed-ssh-ctl.XXXXXX")"
 
@@ -109,15 +161,19 @@ rsync -az -e "$RSYNC_SSH" "$CONFIG_FILE" "$REMOTE:$REMOTE_DIR/config/application
 echo "==> verify shared embedding index"
 "${SSH_CMD[@]}" "$REMOTE" "
   set -e
+  docker ps --format '{{.Names}}' | grep -Fx '$MYSQL_CONTAINER' >/dev/null 2>&1 || {
+    echo 'mysql container not found: $MYSQL_CONTAINER' >&2
+    exit 1
+  }
   MODEL_NAME='$EMBEDDING_MODEL_NAME'
-  MISSING_MODEL=\$(docker exec aimed-mariadb mysql -N -B -ushark -pShark1996! -D aimed -e \"
+  MISSING_MODEL=\$(docker exec '$MYSQL_CONTAINER' mysql -N -B -u'$MYSQL_USERNAME' -p'$MYSQL_PASSWORD' -D '$MYSQL_DATABASE' -e \"
     SELECT COUNT(*)
     FROM knowledge_file_status
     WHERE source = 'uploaded'
       AND processing_status = 'READY'
       AND (embedding_model_name IS NULL OR embedding_model_name <> '\$MODEL_NAME')
   \")
-  MISSING_VECTOR=\$(docker exec aimed-mariadb mysql -N -B -ushark -pShark1996! -D aimed -e \"
+  MISSING_VECTOR=\$(docker exec '$MYSQL_CONTAINER' mysql -N -B -u'$MYSQL_USERNAME' -p'$MYSQL_PASSWORD' -D '$MYSQL_DATABASE' -e \"
     SELECT COUNT(*)
     FROM knowledge_chunk_index
     WHERE embedding IS NULL OR embedding = ''
@@ -133,10 +189,11 @@ echo "==> remote preflight"
 "${SSH_CMD[@]}" "$REMOTE" "
   set -e
   command -v curl >/dev/null 2>&1 || { echo 'curl not found on remote host' >&2; exit 1; }
-  curl -fsS 'http://127.0.0.1:8000/api/v2/heartbeat' >/dev/null
-  nc -z 127.0.0.1 13306
-  nc -z 127.0.0.1 27018
-  nc -z 127.0.0.1 6379
+  command -v nc >/dev/null 2>&1 || { echo 'nc not found on remote host' >&2; exit 1; }
+  curl -fsS 'http://127.0.0.1:$CHROMA_PORT/api/v2/heartbeat' >/dev/null
+  nc -z 127.0.0.1 '$MYSQL_PORT'
+  nc -z 127.0.0.1 '$MONGO_PORT'
+  nc -z 127.0.0.1 '$REDIS_PORT'
 "
 
 echo "==> deploy containers"
@@ -144,6 +201,7 @@ echo "==> deploy containers"
   set -e
   cd '$REMOTE_DIR'
   export DOCKER_BUILDKIT=1
+  echo 'deploy mode: rsync source + remote docker compose build'
   docker compose -f docker-compose.online.yml up -d --build backend frontend
   docker compose -f docker-compose.online.yml ps
   for i in \$(seq 1 100); do

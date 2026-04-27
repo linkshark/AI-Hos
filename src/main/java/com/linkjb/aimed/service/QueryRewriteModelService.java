@@ -50,26 +50,20 @@ public class QueryRewriteModelService {
             """;
 
     private final ObjectMapper objectMapper;
-    private final ChatModel localChatModel;
-    private final ChatModel onlineFastChatModel;
-    private final ChatModel onlineDeepChatModel;
+    private final ChatModel queryRewriteChatModel;
     private final boolean enabled;
-    private final String provider;
+    private final String platform;
     private final ModelRewriteMode mode;
 
     public QueryRewriteModelService(ObjectMapper objectMapper,
-                                    @Qualifier("localChatModel") ChatModel localChatModel,
-                                    @Qualifier("onlineFastChatModel") ChatModel onlineFastChatModel,
-                                    @Qualifier("onlineDeepChatModel") ChatModel onlineDeepChatModel,
+                                    @Qualifier("queryRewriteChatModel") ChatModel queryRewriteChatModel,
                                     @Value("${app.rag.query-rewrite.model.enabled:false}") boolean enabled,
-                                    @Value("${app.rag.query-rewrite.model.provider:QWEN_ONLINE_FAST}") String provider,
+                                    @Value("${app.rag.query-rewrite.model.platform:ONLINE_FAST}") String platform,
                                     @Value("${app.rag.query-rewrite.model.mode:DIAGNOSTIC_ONLY}") String mode) {
         this.objectMapper = objectMapper;
-        this.localChatModel = localChatModel;
-        this.onlineFastChatModel = onlineFastChatModel;
-        this.onlineDeepChatModel = onlineDeepChatModel;
+        this.queryRewriteChatModel = queryRewriteChatModel;
         this.enabled = enabled;
-        this.provider = provider == null ? "QWEN_ONLINE_FAST" : provider.trim().toUpperCase(Locale.ROOT);
+        this.platform = platform == null ? "ONLINE_FAST" : platform.trim().toUpperCase(Locale.ROOT);
         this.mode = parseMode(mode);
     }
 
@@ -86,13 +80,13 @@ public class QueryRewriteModelService {
             return new ModelRewriteResult(null, false);
         }
         try {
-            ChatResponse response = selectModel().chat(buildMessages(currentQuery, recentUserSummaries, detectedMedicalAnchors, ruleEffectiveQuery, intentType));
+            ChatResponse response = queryRewriteChatModel.chat(buildMessages(currentQuery, recentUserSummaries, detectedMedicalAnchors, ruleEffectiveQuery, intentType));
             String text = response == null || response.aiMessage() == null ? null : response.aiMessage().text();
             KnowledgeRetrievalModelRewriteCandidate candidate = parseCandidate(text);
             boolean accepted = candidate != null && validateCandidate(candidate, currentQuery, recentUserSummaries, detectedMedicalAnchors, intentType);
             return new ModelRewriteResult(candidate, accepted);
         } catch (Exception exception) {
-            log.warn("query.rewrite.model.failed provider={} intentType={}", provider, intentType, exception);
+            log.warn("query.rewrite.model.failed platform={} intentType={}", platform, intentType, exception);
             return new ModelRewriteResult(null, false);
         }
     }
@@ -173,14 +167,6 @@ public class QueryRewriteModelService {
                 intentType
         );
         return List.of(SystemMessage.from(SYSTEM_PROMPT), UserMessage.from(userPrompt));
-    }
-
-    private ChatModel selectModel() {
-        return switch (provider) {
-            case "LOCAL_OLLAMA" -> localChatModel;
-            case "QWEN_ONLINE_DEEP" -> onlineDeepChatModel;
-            default -> onlineFastChatModel;
-        };
     }
 
     private ModelRewriteMode parseMode(String rawMode) {

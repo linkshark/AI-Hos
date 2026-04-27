@@ -9,7 +9,7 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-final class KnowledgeSearchLexicon {
+public final class KnowledgeSearchLexicon {
 
     private static final List<String> QUERY_NOISE_SUFFIXES = List.of(
             "讲了什么", "讲什么", "是什么", "主要内容", "内容是什么", "内容讲什么",
@@ -21,11 +21,14 @@ final class KnowledgeSearchLexicon {
             "帮我", "需要", "建议", "什么", "怎么样", "是否", "能否", "治疗"
     );
     private static final List<String> COMMON_MEDICAL_TERMS = List.of(
-            "肺炎支原体肺炎", "慢性阻塞性肺疾病", "慢性肾脏病", "高尿酸血症",
+            "肺炎支原体感染", "肺炎支原体肺炎", "支原体肺炎", "支原体感染",
+            "慢性阻塞性肺疾病", "慢性肾脏病", "高尿酸血症",
             "普通感冒", "感冒", "上呼吸道感染", "急性上呼吸道感染",
             "肝癌", "肺癌", "胃癌", "肠癌", "乳腺癌", "糖尿病", "高血压",
             "痛风", "肥胖症", "流感", "诺如病毒", "新型冠状病毒感染",
-            "发热", "发烧", "鼻塞", "咳嗽", "咽痛", "流涕", "腹泻", "呕吐"
+            "发热", "发烧", "鼻塞", "咳嗽", "干咳", "咳痰", "咽痛", "喉咙痛",
+            "流涕", "流鼻涕", "打喷嚏", "腹泻", "拉肚子", "呕吐", "恶心",
+            "头痛", "头疼", "胸闷", "胸痛", "腹痛", "皮疹", "乏力"
     );
     private static final Set<String> REWRITE_NOISE_TOKENS = Set.of(
             "普通人", "没有别的症状", "就这些", "先这样", "我现在", "我叫", "好的", "你好", "您好"
@@ -169,7 +172,7 @@ final class KnowledgeSearchLexicon {
                 .toList();
     }
 
-    static String normalizeSearchQuery(String query) {
+    public static String normalizeSearchQuery(String query) {
         if (!StringUtils.hasText(query)) {
             return "";
         }
@@ -208,6 +211,7 @@ final class KnowledgeSearchLexicon {
                 addKeyword(tokens, term + "指南");
             }
         }
+        addAliasTokens(normalized, tokens);
         return tokens.stream().filter(KnowledgeSearchLexicon::isUsefulQueryToken).toList();
     }
 
@@ -223,6 +227,7 @@ final class KnowledgeSearchLexicon {
                 anchors.add(term);
             }
         }
+        addAliasTokens(normalized, anchors);
         return anchors.stream().filter(StringUtils::hasText).toList();
     }
 
@@ -363,5 +368,29 @@ final class KnowledgeSearchLexicon {
             return value.replaceAll(".*?(\\d{4}年?版).*", "$1");
         }
         return null;
+    }
+
+    private static void addAliasTokens(String normalized, Set<String> tokens) {
+        if (!StringUtils.hasText(normalized)) {
+            return;
+        }
+        if (containsAny(normalized, "肺炎支原体感染", "肺炎支原体肺炎", "支原体肺炎", "支原体感染", "肺炎支原体")) {
+            addKeyword(tokens, "肺炎支原体感染");
+            addKeyword(tokens, "肺炎支原体肺炎");
+            addKeyword(tokens, "支原体肺炎");
+            addKeyword(tokens, "支原体感染");
+            if (normalized.contains("儿童")) {
+                addKeyword(tokens, "儿童肺炎支原体肺炎");
+            }
+            if (containsAny(normalized, "指南", "规范", "共识")) {
+                addKeyword(tokens, "肺炎支原体肺炎指南");
+                addKeyword(tokens, "儿童肺炎支原体肺炎诊疗指南");
+            }
+        }
+        if (containsAny(normalized, "肝细胞癌", "原发性肝癌")) {
+            addKeyword(tokens, "原发性肝癌");
+            addKeyword(tokens, "肝细胞癌");
+            addKeyword(tokens, "肝癌");
+        }
     }
 }

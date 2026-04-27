@@ -16,12 +16,34 @@ public class KnowledgeChunkIndex {
     private String segmentId;
     /** chunk 顺序号，从 1 开始。 */
     private Integer segmentIndex;
+    /** chunk 所属索引代际，仅 current_generation 对外生效。 */
+    private Integer generation;
     /** chunk 原始内容。 */
     private String content;
     /** chunk 简略摘要，用于管理台和引用预览。 */
     private String preview;
     /** chunk 字符数。 */
     private Integer characterCount;
+    /** chunk 所属章节标题。 */
+    private String sectionTitle;
+    /** chunk 结构类型：SECTION / PARAGRAPH / LIST / STEP / FALLBACK。 */
+    private String segmentKind;
+    /** 切分模式：RULE_RECURSIVE / STRUCTURED。 */
+    private String segmentationMode;
+    /** chunk 的语义摘要。 */
+    private String semanticSummary;
+    /** chunk 的语义关键词，使用空格分隔。 */
+    private String semanticKeywords;
+    /** chunk 的章节角色，如诊断/治疗/流程。 */
+    private String sectionRole;
+    /** chunk 提取出的医学实体 JSON。 */
+    private String medicalEntitiesJson;
+    /** chunk 可回答的目标问题 JSON。 */
+    private String targetQuestionsJson;
+    /** 语义增强时间。 */
+    private LocalDateTime semanticEnrichedAt;
+    /** 语义增强使用的模型名。 */
+    private String semanticEnrichmentModel;
     /** embedding 向量序列化结果。 */
     private String embedding;
     /** 继承自文件级 metadata 的标题。 */
@@ -81,6 +103,14 @@ public class KnowledgeChunkIndex {
         this.segmentIndex = segmentIndex;
     }
 
+    public Integer getGeneration() {
+        return generation;
+    }
+
+    public void setGeneration(Integer generation) {
+        this.generation = generation;
+    }
+
     public String getContent() {
         return content;
     }
@@ -103,6 +133,86 @@ public class KnowledgeChunkIndex {
 
     public void setCharacterCount(Integer characterCount) {
         this.characterCount = characterCount;
+    }
+
+    public String getSectionTitle() {
+        return sectionTitle;
+    }
+
+    public void setSectionTitle(String sectionTitle) {
+        this.sectionTitle = sectionTitle;
+    }
+
+    public String getSegmentKind() {
+        return segmentKind;
+    }
+
+    public void setSegmentKind(String segmentKind) {
+        this.segmentKind = segmentKind;
+    }
+
+    public String getSegmentationMode() {
+        return segmentationMode;
+    }
+
+    public void setSegmentationMode(String segmentationMode) {
+        this.segmentationMode = segmentationMode;
+    }
+
+    public String getSemanticSummary() {
+        return semanticSummary;
+    }
+
+    public void setSemanticSummary(String semanticSummary) {
+        this.semanticSummary = semanticSummary;
+    }
+
+    public String getSemanticKeywords() {
+        return semanticKeywords;
+    }
+
+    public void setSemanticKeywords(String semanticKeywords) {
+        this.semanticKeywords = semanticKeywords;
+    }
+
+    public String getSectionRole() {
+        return sectionRole;
+    }
+
+    public void setSectionRole(String sectionRole) {
+        this.sectionRole = sectionRole;
+    }
+
+    public String getMedicalEntitiesJson() {
+        return medicalEntitiesJson;
+    }
+
+    public void setMedicalEntitiesJson(String medicalEntitiesJson) {
+        this.medicalEntitiesJson = medicalEntitiesJson;
+    }
+
+    public String getTargetQuestionsJson() {
+        return targetQuestionsJson;
+    }
+
+    public void setTargetQuestionsJson(String targetQuestionsJson) {
+        this.targetQuestionsJson = targetQuestionsJson;
+    }
+
+    public LocalDateTime getSemanticEnrichedAt() {
+        return semanticEnrichedAt;
+    }
+
+    public void setSemanticEnrichedAt(LocalDateTime semanticEnrichedAt) {
+        this.semanticEnrichedAt = semanticEnrichedAt;
+    }
+
+    public String getSemanticEnrichmentModel() {
+        return semanticEnrichmentModel;
+    }
+
+    public void setSemanticEnrichmentModel(String semanticEnrichmentModel) {
+        this.semanticEnrichmentModel = semanticEnrichmentModel;
     }
 
     public String getEmbedding() {

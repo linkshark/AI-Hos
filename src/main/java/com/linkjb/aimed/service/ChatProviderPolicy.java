@@ -36,13 +36,17 @@ final class ChatProviderPolicy {
         if (ChatApplicationService.QWEN_ONLINE_DEEP.equals(normalized)) {
             return onlineProviderEnabled ? ChatApplicationService.QWEN_ONLINE_DEEP : fallbackProvider();
         }
-        return localProviderEnabled ? ChatApplicationService.LOCAL_OLLAMA : fallbackProvider();
+        if (ChatApplicationService.LOCAL_OMLX.equals(normalized)
+                || ChatApplicationService.LOCAL_OLLAMA.equals(normalized)) {
+            return localProviderEnabled ? ChatApplicationService.LOCAL_OMLX : fallbackProvider();
+        }
+        return localProviderEnabled ? ChatApplicationService.LOCAL_OMLX : fallbackProvider();
     }
 
     ChatProviderConfigResponse providerConfig() {
         List<String> enabledProviders = new ArrayList<>(3);
         if (localProviderEnabled) {
-            enabledProviders.add(ChatApplicationService.LOCAL_OLLAMA);
+            enabledProviders.add(ChatApplicationService.LOCAL_OMLX);
         }
         if (onlineProviderEnabled) {
             enabledProviders.add(ChatApplicationService.QWEN_ONLINE_FAST);
@@ -61,12 +65,12 @@ final class ChatProviderPolicy {
         if (isOnlineProvider(provider)) {
             return "抱歉，当前千问在线服务暂时不可用，请稍后重试。若持续失败，请检查百炼网络连接。";
         }
-        return "抱歉，当前本地 Ollama 模型暂时不可用，请检查本机 Ollama 服务和模型是否已启动。";
+        return "抱歉，当前本地 OMLX 模型暂时不可用，请检查 OMLX 服务和模型是否已启动。";
     }
 
     private String fallbackProvider() {
         if (localProviderEnabled) {
-            return ChatApplicationService.LOCAL_OLLAMA;
+            return ChatApplicationService.LOCAL_OMLX;
         }
         if (onlineProviderEnabled) {
             return ChatApplicationService.QWEN_ONLINE_FAST;

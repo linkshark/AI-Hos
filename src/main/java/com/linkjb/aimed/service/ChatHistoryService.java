@@ -6,6 +6,8 @@ import com.linkjb.aimed.entity.dto.response.chat.ChatHistoryAttachmentResponse;
 import com.linkjb.aimed.entity.dto.response.chat.ChatHistoryDetailResponse;
 import com.linkjb.aimed.entity.dto.response.chat.ChatHistoryItemResponse;
 import com.linkjb.aimed.entity.dto.response.chat.ChatHistoryMessageResponse;
+import com.linkjb.aimed.entity.dto.response.chat.ChatStreamMetadata;
+import com.linkjb.aimed.entity.dto.response.chat.ChatTraceStage;
 import com.linkjb.aimed.entity.document.chat.ChatVisibleHistoryDocument;
 import com.linkjb.aimed.entity.ChatSessionOwner;
 import com.linkjb.aimed.store.MongoChatMemoryStore;
@@ -89,8 +91,9 @@ public class ChatHistoryService {
         syncOwnerSummary(history);
     }
 
-    public void recordAssistantMessage(Long memoryId, String content, List<KnowledgeCitationItem> citations) {
+    public void recordAssistantMessage(Long memoryId, String content, ChatStreamMetadata metadata) {
         Long userId = chatSessionUserBindingService.resolveUserId(memoryId);
+        List<KnowledgeCitationItem> citations = metadata == null ? List.of() : metadata.getCitations();
         if (userId == null || memoryId == null || (!StringUtils.hasText(content) && (citations == null || citations.isEmpty()))) {
             return;
         }
@@ -101,7 +104,17 @@ public class ChatHistoryService {
                 false,
                 StringUtils.hasText(content) ? content.trim() : "",
                 List.of(),
-                cloneCitations(citations)
+                cloneCitations(citations),
+                metadata == null ? "" : metadata.getTraceId(),
+                metadata == null ? "" : metadata.getProvider(),
+                metadata == null ? "" : metadata.getToolMode(),
+                metadata == null ? "" : metadata.getIntentType(),
+                metadata == null ? "" : metadata.getRouteTarget(),
+                metadata != null && metadata.isRagApplied(),
+                metadata == null ? "" : metadata.getRagSkipReason(),
+                metadata == null ? 0L : metadata.getServerDurationMs(),
+                metadata == null ? 0L : metadata.getFirstTokenLatencyMs(),
+                cloneTraceStages(metadata == null ? List.of() : metadata.getTraceStages())
         ));
         visibleHistorySummarySupport.refreshVisibleHistorySummary(history);
         if (!visibleHistorySummarySupport.hasMeaningfulVisibleContent(history)) {
@@ -183,13 +196,15 @@ public class ChatHistoryService {
 
     private ChatHistoryDetailResponse buildDebugDetail(ChatSessionOwner owner) {
         ChatVisibleHistoryDocument visibleHistory = loadVisibleHistory(owner.getUserId(), owner.getMemoryId(), false);
+        List<ChatHistoryMessageResponse> visibleMessages = visibleHistory == null ? List.of() : visibleHistory.getMessages();
         List<ChatHistoryMessageResponse> rawMessages = buildDebugMessages(owner.getMemoryId());
-        if (rawMessages.isEmpty()) {
+        if (rawMessages.isEmpty() && visibleMessages.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "当前历史会话不存在或已删除");
         }
+        List<ChatHistoryMessageResponse> debugMessages = mergeDebugMessages(visibleMessages, rawMessages);
         String defaultTitle = visibleHistory != null && StringUtils.hasText(visibleHistory.getFirstQuestion())
                 ? abbreviate(singleLine(visibleHistory.getFirstQuestion()), 22)
-                : visibleHistorySummarySupport.summarizeTitle(rawMessages);
+                : visibleHistorySummarySupport.summarizeTitle(debugMessages);
         String displayTitle = StringUtils.hasText(owner.getCustomTitle()) ? owner.getCustomTitle().trim() : defaultTitle;
         return new ChatHistoryDetailResponse(
                 owner.getMemoryId(),
@@ -197,7 +212,7 @@ public class ChatHistoryService {
                 owner.getCustomTitle(),
                 visibleHistory == null ? null : visibleHistory.getFirstQuestion(),
                 visibleHistory == null ? null : visibleHistory.getLastPreview(),
-                rawMessages
+                debugMessages
         );
     }
 
@@ -220,6 +235,57 @@ public class ChatHistoryService {
             }
         }
         return items;
+    }
+
+    private List<ChatHistoryMessageResponse> mergeDebugMessages(List<ChatHistoryMessageResponse> visibleMessages,
+                                                                List<ChatHistoryMessageResponse> rawMessages) {
+        if (rawMessages == null || rawMessages.isEmpty()) {
+            return visibleMessages == null ? List.of() : visibleMessages;
+        }
+        if (visibleMessages == null || visibleMessages.isEmpty()) {
+            return rawMessages;
+        }
+        List<ChatHistoryMessageResponse> rawConversation = rawMessages.stream()
+                .filter(item -> !isDebugSystemMessage(item))
+                .toList();
+        if (rawConversation.isEmpty()) {
+            return visibleMessages;
+        }
+        int anchorIndex = findVisibleAnchorIndex(visibleMessages, rawConversation.get(0));
+        if (anchorIndex < 0) {
+            return rawMessages.size() >= visibleMessages.size() ? rawMessages : visibleMessages;
+        }
+        List<ChatHistoryMessageResponse> merged = new ArrayList<>(visibleMessages.subList(0, anchorIndex));
+        merged.addAll(rawMessages);
+        return merged;
+    }
+
+    private int findVisibleAnchorIndex(List<ChatHistoryMessageResponse> visibleMessages,
+                                       ChatHistoryMessageResponse firstRawConversationMessage) {
+        for (int i = 0; i < visibleMessages.size(); i++) {
+            if (sameConversationMessage(visibleMessages.get(i), firstRawConversationMessage)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private boolean sameConversationMessage(ChatHistoryMessageResponse left, ChatHistoryMessageResponse right) {
+        if (left == null || right == null || left.user() != right.user()) {
+            return false;
+        }
+        return normalizeDebugContent(left.content()).equals(normalizeDebugContent(right.content()));
+    }
+
+    private boolean isDebugSystemMessage(ChatHistoryMessageResponse item) {
+        return item != null && !item.user() && StringUtils.hasText(item.content()) && item.content().startsWith("[System]\n");
+    }
+
+    private String normalizeDebugContent(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        return value.replaceAll("\\s+", " ").trim();
     }
 
     private ChatVisibleHistoryDocument loadOrCreateVisibleHistory(Long userId, Long memoryId) {
@@ -375,6 +441,26 @@ public class ChatHistoryService {
             copy.setVersion(citation.getVersion());
             copy.setRetrievalType(citation.getRetrievalType());
             items.add(copy);
+        }
+        return items;
+    }
+
+    private List<ChatTraceStage> cloneTraceStages(List<ChatTraceStage> traceStages) {
+        List<ChatTraceStage> items = new ArrayList<>();
+        if (traceStages == null) {
+            return items;
+        }
+        for (ChatTraceStage traceStage : traceStages) {
+            if (traceStage == null) {
+                continue;
+            }
+            items.add(new ChatTraceStage(
+                    traceStage.getKey(),
+                    traceStage.getLabel(),
+                    traceStage.getDurationMs(),
+                    traceStage.getStatus(),
+                    traceStage.getDetail()
+            ));
         }
         return items;
     }

@@ -187,7 +187,7 @@
       <section v-if="selectedDetail" class="detail-card">
         <div v-if="isDetailProcessing" class="detail-lock-banner">
           <strong>当前文件正在重建中</strong>
-          <p>{{ selectedDetail.statusMessage || '正在解析文档并重建 RAG 索引，完成前已锁定发布、归档、删除和编辑操作。' }}</p>
+          <p>{{ selectedDetail.indexUpgradeMessage || selectedDetail.statusMessage || '正在解析文档并重建 RAG 索引，完成前已锁定发布、归档、删除和编辑操作。' }}</p>
         </div>
         <div class="knowledge-stage-strip">
           <div :class="['knowledge-stage-item', { active: currentKnowledgeStage === 'processing' }]">
@@ -239,15 +239,6 @@
               :disabled="isDetailActionLocked"
             >
               归档下线
-            </button>
-            <button
-              v-if="['READY', 'FAILED', 'ARCHIVED', 'PUBLISHED'].includes(selectedDetail.processingStatus)"
-              class="secondary-button slim-button"
-              type="button"
-              @click="reprocessFile"
-              :disabled="isDetailActionLocked"
-            >
-              重新处理
             </button>
             <button
               class="secondary-button slim-button"
@@ -329,9 +320,24 @@
                 <span>管理能力</span>
                 <strong>{{ selectedDetail.editable ? '可编辑' : '只读查看' }}</strong>
               </div>
+              <div class="meta-card">
+                <span>切分策略</span>
+                <strong>{{ segmentationModeLabel(selectedDetail.segmentationMode) }}</strong>
+              </div>
+              <div class="meta-card">
+                <span>语义增强</span>
+                <strong>{{ selectedDetail.semanticEnhanced ? '已增强' : '基础切分' }}</strong>
+              </div>
+              <div v-if="selectedDetail.indexUpgradeState && selectedDetail.indexUpgradeState !== 'IDLE'" class="meta-card">
+                <span>索引升级</span>
+                <strong>{{ selectedDetail.indexUpgradeState === 'UPGRADING' ? '升级中' : '升级异常' }}</strong>
+              </div>
             </div>
             <div v-if="detailStageHint" class="status-note workflow-note">
               {{ detailStageHint }}
+            </div>
+            <div v-if="selectedDetail.indexUpgradeMessage" class="status-note workflow-note">
+              {{ selectedDetail.indexUpgradeMessage }}
             </div>
           </div>
         </section>
@@ -588,10 +594,39 @@
               class="chunk-item"
             >
               <summary>
-                <span>Chunk {{ chunk.index }}</span>
+                <div class="chunk-summary-main">
+                  <span>Chunk {{ chunk.index }}</span>
+                  <div class="chunk-meta-row">
+                    <span v-if="chunk.sectionTitle" class="chunk-chip">{{ chunk.sectionTitle }}</span>
+                    <span v-if="chunk.segmentKind" class="chunk-chip chunk-chip-soft">{{ segmentKindLabel(chunk.segmentKind) }}</span>
+                    <span v-if="chunk.segmentationMode" class="chunk-chip chunk-chip-muted">{{ segmentationModeLabel(chunk.segmentationMode) }}</span>
+                  </div>
+                </div>
                 <span>{{ chunk.characterCount }} 字</span>
               </summary>
               <p class="chunk-preview">{{ chunk.preview }}</p>
+              <div v-if="chunk.sectionRole || chunk.semanticSummary || chunk.semanticKeywords?.length || chunk.targetQuestions?.length" class="chunk-semantic-panel">
+                <div v-if="chunk.sectionRole" class="chunk-semantic-row">
+                  <span class="chunk-semantic-label">角色</span>
+                  <strong>{{ chunk.sectionRole }}</strong>
+                </div>
+                <div v-if="chunk.semanticSummary" class="chunk-semantic-row">
+                  <span class="chunk-semantic-label">摘要</span>
+                  <p>{{ chunk.semanticSummary }}</p>
+                </div>
+                <div v-if="chunk.semanticKeywords?.length" class="chunk-semantic-row">
+                  <span class="chunk-semantic-label">关键词</span>
+                  <div class="chunk-meta-row">
+                    <span v-for="keyword in chunk.semanticKeywords" :key="keyword" class="chunk-chip chunk-chip-soft">{{ keyword }}</span>
+                  </div>
+                </div>
+                <div v-if="chunk.targetQuestions?.length" class="chunk-semantic-row">
+                  <span class="chunk-semantic-label">适用问法</span>
+                  <ul class="chunk-question-list">
+                    <li v-for="question in chunk.targetQuestions" :key="question">{{ question }}</li>
+                  </ul>
+                </div>
+              </div>
               <pre class="chunk-content">{{ chunk.content }}</pre>
             </details>
             <div v-if="!selectedDetail.chunks?.length" class="empty-chunks">
@@ -1015,6 +1050,33 @@ const departmentLabel = (value) => {
   return deptNameByCode.value.get(normalized) || normalized
 }
 
+const segmentationModeLabel = (value) => {
+  if (value === 'STRUCTURED') {
+    return '结构化语义切分'
+  }
+  if (value === 'RULE_RECURSIVE') {
+    return '递归规则切分'
+  }
+  return value || '递归规则切分'
+}
+
+const segmentKindLabel = (value) => {
+  switch (value) {
+    case 'SECTION':
+      return '章节段'
+    case 'PARAGRAPH':
+      return '自然段'
+    case 'LIST':
+      return '列表'
+    case 'STEP':
+      return '步骤'
+    case 'FALLBACK':
+      return '兜底切分'
+    default:
+      return value || '普通段'
+  }
+}
+
 const toggleDeptTreePicker = () => {
   isDeptTreePickerOpen.value = !isDeptTreePickerOpen.value
   if (isDeptTreePickerOpen.value) {
@@ -1364,23 +1426,6 @@ const archiveFile = async () => {
   } catch (error) {
     console.error('归档知识文件失败:', error)
     ElMessage.error(resolveAxiosErrorMessage(error, '归档知识文件失败。'))
-  }
-}
-
-const reprocessFile = async () => {
-  if (!selectedDetail.value) {
-    return
-  }
-
-  try {
-    const { data } = await apiClient.post(`/api/aimed/knowledge/files/${selectedDetail.value.hash}/reprocess`)
-    selectedDetail.value = data
-    applyFileSnapshot(data)
-    await loadFiles(data.hash)
-    ElMessage.success('知识文件已重新加入处理队列。')
-  } catch (error) {
-    console.error('重新处理知识文件失败:', error)
-    ElMessage.error(resolveAxiosErrorMessage(error, '重新处理知识文件失败。'))
   }
 }
 
@@ -3086,11 +3131,84 @@ const toLocalDateTimeInput = (value) => {
   font-weight: 700;
 }
 
+.chunk-summary-main {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.chunk-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chunk-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  max-width: 100%;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(76, 166, 164, 0.14);
+  color: #2d6f76;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.chunk-chip-soft {
+  background: rgba(96, 130, 195, 0.12);
+  color: #4a6690;
+}
+
+.chunk-chip-muted {
+  background: rgba(227, 238, 238, 0.96);
+  color: #69868b;
+}
+
 .chunk-preview {
   margin: 0;
   padding: 0 16px 12px;
   color: #5c7c81;
   font-size: 13px;
+  line-height: 1.6;
+}
+
+.chunk-semantic-panel {
+  display: grid;
+  gap: 10px;
+  margin: 0 16px 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(190, 223, 222, 0.85);
+  border-radius: 16px;
+  background: rgba(245, 251, 250, 0.9);
+}
+
+.chunk-semantic-row {
+  display: grid;
+  gap: 6px;
+}
+
+.chunk-semantic-label {
+  color: #6f8b90;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.chunk-semantic-row p {
+  margin: 0;
+  color: #365a60;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.chunk-question-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #4b6b71;
+  font-size: 12px;
   line-height: 1.6;
 }
 

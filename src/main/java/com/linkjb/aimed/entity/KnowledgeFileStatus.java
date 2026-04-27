@@ -40,6 +40,14 @@ public class KnowledgeFileStatus {
     private Integer totalBatches;
     /** 当前文件索引使用的 embedding 模型名。 */
     private String embeddingModelName;
+    /** 当前知识索引构建版本，用于判断是否需要按新规则升级。 */
+    private Integer indexBuildVersion;
+    /** 当前对外生效的索引代际，检索与详情只读取这一代。 */
+    private Integer currentGeneration;
+    /** 索引升级状态：IDLE / UPGRADING / FAILED。 */
+    private String indexUpgradeState;
+    /** 索引升级的人类可读说明。 */
+    private String indexUpgradeMessage;
     /** 文档类型，用于过滤和重排。 */
     private String docType;
     /** 归属科室或学科。 */
@@ -195,6 +203,38 @@ public class KnowledgeFileStatus {
 
     public void setEmbeddingModelName(String embeddingModelName) {
         this.embeddingModelName = embeddingModelName;
+    }
+
+    public Integer getIndexBuildVersion() {
+        return indexBuildVersion;
+    }
+
+    public void setIndexBuildVersion(Integer indexBuildVersion) {
+        this.indexBuildVersion = indexBuildVersion;
+    }
+
+    public Integer getCurrentGeneration() {
+        return currentGeneration;
+    }
+
+    public void setCurrentGeneration(Integer currentGeneration) {
+        this.currentGeneration = currentGeneration;
+    }
+
+    public String getIndexUpgradeState() {
+        return indexUpgradeState;
+    }
+
+    public void setIndexUpgradeState(String indexUpgradeState) {
+        this.indexUpgradeState = indexUpgradeState;
+    }
+
+    public String getIndexUpgradeMessage() {
+        return indexUpgradeMessage;
+    }
+
+    public void setIndexUpgradeMessage(String indexUpgradeMessage) {
+        this.indexUpgradeMessage = indexUpgradeMessage;
     }
 
     public String getDocType() {

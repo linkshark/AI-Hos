@@ -5,6 +5,7 @@ import org.springframework.util.StringUtils;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Pattern;
 
 /**
  * 聊天意图分析服务。
@@ -14,6 +15,27 @@ import java.util.Locale;
  */
 @Service
 public class ChatIntentAnalysisService {
+    private static final List<String> MEDICAL_NEED_TERMS = List.of(
+            "怎么办", "怎么处理", "怎么治疗", "如何治疗", "吃什么药", "用什么药", "要不要去医院",
+            "需要检查", "挂什么科", "看什么科", "是什么原因", "会不会", "能不能", "有没有必要",
+            "报告怎么看", "指标异常", "术后", "复查", "复诊", "注意什么"
+    );
+    private static final List<String> MEDICAL_FOLLOW_UP_TERMS = List.of(
+            "没有别的症状", "无其他症状", "症状", "病史", "过敏史", "体温", "服药", "用药", "疼痛程度"
+    );
+    private static final List<String> HOSPITAL_KNOWLEDGE_TERMS = List.of(
+            "医生", "院士", "主任", "科室", "门诊", "指南", "规范", "共识", "树兰", "医院", "就诊流程", "医保", "报销"
+    );
+    private static final List<String> EXAMINATION_TERMS = List.of(
+            "报告", "检查", "检验", "血常规", "尿常规", "肝功能", "肾功能", "血糖", "血脂", "心电图",
+            "CT", "MRI", "B超", "彩超", "胃镜", "肠镜", "病理", "活检", "阳性", "阴性", "偏高", "偏低"
+    );
+    private static final Pattern MEDICAL_SYMPTOM_PATTERN = Pattern.compile(
+            "(头痛|头晕|发热|发烧|咳嗽|鼻塞|流涕|咽痛|胸闷|胸痛|腹痛|腹泻|呕吐|恶心|便秘|皮疹|瘙痒|水肿|腰痛|关节痛|尿频|尿急|尿痛|失眠|乏力|麻木|抽搐)"
+    );
+    private static final Pattern MEDICAL_DISEASE_SUFFIX_PATTERN = Pattern.compile(
+            "([\\u4e00-\\u9fa5A-Za-z0-9]{1,18})(癌|瘤|炎|病|症|感染|结石|梗死|出血|衰竭|综合征)"
+    );
 
     public ChatIntentResult analyze(String rawMessage) {
         String normalized = KnowledgeSearchLexicon.normalizeSearchQuery(rawMessage);
@@ -67,12 +89,12 @@ public class ChatIntentAnalysisService {
     }
 
     private boolean isMedicalKnowledgeIntent(String query) {
-        return !KnowledgeSearchLexicon.detectMedicalAnchors(query).isEmpty()
-                || containsAny(query, "疾病", "症状", "治疗", "用药", "药", "检查", "报告", "指标", "手术", "发烧", "发热", "咳嗽", "鼻塞", "腹泻","病");
+        // 用加权分数判断医疗知识需求，普通轻症也会因症状锚点进入 RAG，避免绕过院内知识库。
+        return medicalIntentScore(query) >= 2;
     }
 
     private boolean isHospitalKnowledgeIntent(String query) {
-        return containsAny(query, "医生", "院士", "主任", "科室", "门诊", "指南", "规范", "共识", "树兰", "医院", "就诊流程");
+        return containsAny(query, HOSPITAL_KNOWLEDGE_TERMS);
     }
 
     private boolean containsAny(String text, String... terms) {
@@ -101,5 +123,31 @@ public class ChatIntentAnalysisService {
                                    String ragSkipReason,
                                    String reason,
                                    double confidence) {
+    }
+    private int medicalIntentScore(String query) {
+        int score = 0;
+        if (!KnowledgeSearchLexicon.detectMedicalAnchors(query).isEmpty()) {
+            score += 2;
+        }
+        if (containsAny(query, MEDICAL_NEED_TERMS)) {
+            score += 1;
+        }
+        if (containsAny(query, MEDICAL_FOLLOW_UP_TERMS)) {
+            score += 2;
+        }
+        if (containsAny(query, EXAMINATION_TERMS)) {
+            score += 2;
+        }
+        if (MEDICAL_SYMPTOM_PATTERN.matcher(query).find()) {
+            score += 2;
+        }
+        if (MEDICAL_DISEASE_SUFFIX_PATTERN.matcher(query).find()) {
+            score += 2;
+        }
+        return score;
+    }
+
+    private boolean containsAny(String text, List<String> terms) {
+        return containsAny(text, terms.toArray(String[]::new));
     }
 }

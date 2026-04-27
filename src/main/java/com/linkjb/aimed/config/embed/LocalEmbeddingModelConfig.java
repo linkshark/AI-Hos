@@ -21,6 +21,7 @@ public class LocalEmbeddingModelConfig {
             @Value("${app.embedding.base-url:http://localhost:11434}") String baseUrl,
             @Value("${app.embedding.api-key:}") String apiKey,
             @Value("${app.embedding.model-name:bge-m3:latest}") String modelName,
+            @Value("${app.embedding.request-model-name:${app.embedding.model-name:bge-m3:latest}}") String requestModelName,
             @Value("${app.embedding.timeout:PT90S}") Duration timeout,
             @Value("${app.embedding.max-attempts:3}") int maxAttempts,
             @Value("${app.embedding.retry-delay:PT2S}") Duration retryDelay,
@@ -31,7 +32,7 @@ public class LocalEmbeddingModelConfig {
         if ("OLLAMA".equals(normalizedProvider)) {
             delegate = OllamaEmbeddingModel.builder()
                     .baseUrl(baseUrl)
-                    .modelName(modelName)
+                    .modelName(requestModelName)
                     .httpClientBuilder(JdkHttpClient.builder())
                     .timeout(timeout)
                     .logRequests(logRequests)
@@ -44,7 +45,7 @@ public class LocalEmbeddingModelConfig {
             delegate = OpenAiEmbeddingModel.builder()
                     .baseUrl(baseUrl)
                     .apiKey(apiKey)
-                    .modelName(modelName)
+                    .modelName(requestModelName)
                     .httpClientBuilder(JdkHttpClient.builder())
                     .timeout(timeout)
                     .logRequests(logRequests)

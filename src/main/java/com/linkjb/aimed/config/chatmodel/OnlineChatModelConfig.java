@@ -18,7 +18,7 @@ public class OnlineChatModelConfig {
     public ChatModel onlineFastChatModel(
             @Value("${app.online-chat.base-url:https://dashscope.aliyuncs.com/compatible-mode/v1}") String baseUrl,
             @Value("${app.online-chat.api-key:}") String apiKey,
-            @Value("${app.online-chat.fast.model-name:${ONLINE_CHAT_FAST_MODEL_NAME:qwen-plus}}") String modelName,
+            @Value("${app.online-chat.fast.model-name:${ONLINE_CHAT_FAST_MODEL_NAME:qwen3.6-flash}}") String modelName,
             @Value("${app.online-chat.temperature:0.9}") Double temperature,
             @Value("${app.online-chat.timeout:PT90S}") Duration timeout,
             @Value("${app.online-chat.log-requests:false}") Boolean logRequests,
@@ -42,7 +42,7 @@ public class OnlineChatModelConfig {
     public StreamingChatModel onlineFastStreamingChatModel(
             @Value("${app.online-chat.base-url:https://dashscope.aliyuncs.com/compatible-mode/v1}") String baseUrl,
             @Value("${app.online-chat.api-key:}") String apiKey,
-            @Value("${app.online-chat.fast.model-name:${ONLINE_CHAT_FAST_MODEL_NAME:qwen-plus}}") String modelName,
+            @Value("${app.online-chat.fast.model-name:${ONLINE_CHAT_FAST_MODEL_NAME:qwen3.6-flash}}") String modelName,
             @Value("${app.online-chat.temperature:0.9}") Double temperature,
             @Value("${app.online-chat.timeout:PT90S}") Duration timeout,
             @Value("${app.online-chat.log-requests:false}") Boolean logRequests,

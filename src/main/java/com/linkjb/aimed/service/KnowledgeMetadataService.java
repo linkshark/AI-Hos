@@ -114,6 +114,22 @@ public class KnowledgeMetadataService {
         return metadata;
     }
 
+    public void applySegmentationMetadata(Metadata target, Metadata segmentMetadata) {
+        if (target == null || segmentMetadata == null) {
+            return;
+        }
+        copySegmentationValue(segmentMetadata, target, KnowledgeIndexingService.METADATA_SECTION_TITLE);
+        copySegmentationValue(segmentMetadata, target, KnowledgeIndexingService.METADATA_SEGMENT_KIND);
+        copySegmentationValue(segmentMetadata, target, KnowledgeIndexingService.METADATA_SEGMENTATION_MODE);
+        copySegmentationValue(segmentMetadata, target, KnowledgeChunkSemanticEnrichmentService.METADATA_SEMANTIC_SUMMARY);
+        copySegmentationValue(segmentMetadata, target, KnowledgeChunkSemanticEnrichmentService.METADATA_SEMANTIC_KEYWORDS);
+        copySegmentationValue(segmentMetadata, target, KnowledgeChunkSemanticEnrichmentService.METADATA_SECTION_ROLE);
+        copySegmentationValue(segmentMetadata, target, KnowledgeChunkSemanticEnrichmentService.METADATA_MEDICAL_ENTITIES_JSON);
+        copySegmentationValue(segmentMetadata, target, KnowledgeChunkSemanticEnrichmentService.METADATA_TARGET_QUESTIONS_JSON);
+        copySegmentationValue(segmentMetadata, target, KnowledgeChunkSemanticEnrichmentService.METADATA_SEMANTIC_ENRICHMENT_MODEL);
+        copySegmentationValue(segmentMetadata, target, KnowledgeChunkSemanticEnrichmentService.METADATA_SEMANTIC_ENRICHED_AT);
+    }
+
     public List<TextSegment> enrichSegments(List<TextSegment> segments,
                                             String hash,
                                             String source,
@@ -122,7 +138,9 @@ public class KnowledgeMetadataService {
                                             KnowledgeFileMetadata fileMetadata) {
         List<TextSegment> enriched = new ArrayList<>(segments.size());
         for (TextSegment segment : segments) {
-            enriched.add(TextSegment.from(segment.text(), buildSegmentMetadata(hash, source, extension, status, fileMetadata)));
+            Metadata metadata = buildSegmentMetadata(hash, source, extension, status, fileMetadata);
+            applySegmentationMetadata(metadata, segment.metadata());
+            enriched.add(TextSegment.from(segment.text(), metadata));
         }
         return enriched;
     }
@@ -213,6 +231,13 @@ public class KnowledgeMetadataService {
     private void putMetadataIfPresent(Metadata metadata, String key, String value) {
         if (StringUtils.hasText(value)) {
             metadata.put(key, value);
+        }
+    }
+
+    private void copySegmentationValue(Metadata source, Metadata target, String key) {
+        String value = source.getString(key);
+        if (StringUtils.hasText(value)) {
+            target.put(key, value);
         }
     }
 

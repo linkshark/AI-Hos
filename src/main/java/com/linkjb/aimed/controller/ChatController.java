@@ -37,6 +37,7 @@ import org.springframework.web.multipart.MultipartFile;
 import reactor.core.publisher.Flux;
 
 import java.util.List;
+import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Tag(name = "Chat")
@@ -204,28 +205,118 @@ public class ChatController {
         chatHistoryService.recordAssistantMessage(
                 memoryId,
                 parsed.content(),
-                parsed.metadata() == null ? List.of() : parsed.metadata().getCitations()
+                parsed.metadata()
         );
     }
 
     private ParsedStreamResult parseStreamResult(String rawContent) {
-        if (!StringUtils.hasText(rawContent) || !rawContent.contains(ChatApplicationService.STREAM_METADATA_MARKER)) {
+        if (!StringUtils.hasText(rawContent)) {
             return new ParsedStreamResult(rawContent, null);
         }
-        int markerIndex = rawContent.lastIndexOf(ChatApplicationService.STREAM_METADATA_MARKER);
-        String content = rawContent.substring(0, markerIndex);
-        String metadataText = rawContent.substring(markerIndex + ChatApplicationService.STREAM_METADATA_MARKER.length()).trim();
-        if (!StringUtils.hasText(metadataText)) {
-            return new ParsedStreamResult(content, null);
+        List<MarkedJsonChunk> eventChunks = extractMarkedJsonChunks(rawContent, ChatApplicationService.STREAM_EVENT_MARKER);
+        String withoutEvents = removeMarkedChunks(rawContent, eventChunks);
+        if (!withoutEvents.contains(ChatApplicationService.STREAM_METADATA_MARKER)) {
+            return new ParsedStreamResult(withoutEvents, null);
         }
+        int markerIndex = withoutEvents.lastIndexOf(ChatApplicationService.STREAM_METADATA_MARKER);
+        int contentEnd = markerIndex >= 2 && "\n\n".equals(withoutEvents.substring(markerIndex - 2, markerIndex))
+                ? markerIndex - 2
+                : markerIndex;
+        String content = withoutEvents.substring(0, contentEnd);
+        String metadataText = withoutEvents.substring(markerIndex + ChatApplicationService.STREAM_METADATA_MARKER.length()).trim();
         try {
-            return new ParsedStreamResult(content, objectMapper.readValue(metadataText, ChatStreamMetadata.class));
+            return new ParsedStreamResult(content, StringUtils.hasText(metadataText)
+                    ? objectMapper.readValue(metadataText, ChatStreamMetadata.class)
+                    : null);
         } catch (Exception exception) {
             log.warn("chat.stream.metadata.parse.failed rawLength={}", rawContent == null ? 0 : rawContent.length(), exception);
-            return new ParsedStreamResult(rawContent, null);
+            return new ParsedStreamResult(withoutEvents, null);
         }
     }
 
+    private List<MarkedJsonChunk> extractMarkedJsonChunks(String rawContent, String marker) {
+        List<MarkedJsonChunk> chunks = new ArrayList<>();
+        int searchFrom = 0;
+        while (searchFrom >= 0 && searchFrom < rawContent.length()) {
+            int markerIndex = rawContent.indexOf(marker, searchFrom);
+            if (markerIndex < 0) {
+                break;
+            }
+            int jsonStart = markerIndex + marker.length();
+            int jsonEnd = findJsonObjectEnd(rawContent, jsonStart);
+            if (jsonEnd < 0) {
+                break;
+            }
+            int chunkStart = markerIndex >= 2 && "\n\n".equals(rawContent.substring(markerIndex - 2, markerIndex))
+                    ? markerIndex - 2
+                    : markerIndex;
+            chunks.add(new MarkedJsonChunk(chunkStart, jsonEnd));
+            searchFrom = jsonEnd;
+        }
+        return chunks;
+    }
+
+    private String removeMarkedChunks(String rawContent, List<MarkedJsonChunk> chunks) {
+        if (chunks == null || chunks.isEmpty()) {
+            return rawContent;
+        }
+        StringBuilder builder = new StringBuilder(rawContent.length());
+        int cursor = 0;
+        for (MarkedJsonChunk chunk : chunks) {
+            builder.append(rawContent, cursor, chunk.startIndex());
+            cursor = chunk.endIndex();
+        }
+        builder.append(rawContent, cursor, rawContent.length());
+        return builder.toString();
+    }
+
+    private int findJsonObjectEnd(String rawContent, int startIndex) {
+        int cursor = skipWhitespace(rawContent, startIndex);
+        if (cursor >= rawContent.length() || rawContent.charAt(cursor) != '{') {
+            return -1;
+        }
+        int depth = 0;
+        boolean inString = false;
+        boolean escaping = false;
+        for (int index = cursor; index < rawContent.length(); index++) {
+            char current = rawContent.charAt(index);
+            if (inString) {
+                if (escaping) {
+                    escaping = false;
+                } else if (current == '\\') {
+                    escaping = true;
+                } else if (current == '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (current == '"') {
+                inString = true;
+                continue;
+            }
+            if (current == '{') {
+                depth++;
+            } else if (current == '}') {
+                depth--;
+                if (depth == 0) {
+                    return index + 1;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private int skipWhitespace(String rawContent, int startIndex) {
+        int cursor = startIndex;
+        while (cursor < rawContent.length() && Character.isWhitespace(rawContent.charAt(cursor))) {
+            cursor++;
+        }
+        return cursor;
+    }
+
     private record ParsedStreamResult(String content, ChatStreamMetadata metadata) {
+    }
+
+    private record MarkedJsonChunk(int startIndex, int endIndex) {
     }
 }

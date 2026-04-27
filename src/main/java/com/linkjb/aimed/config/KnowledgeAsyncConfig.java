@@ -23,6 +23,21 @@ public class KnowledgeAsyncConfig {
         return executor;
     }
 
+    @Bean(name = "knowledgeSearchExecutor")
+    public ThreadPoolTaskExecutor knowledgeSearchExecutor(
+            @Value("${app.knowledge-base.search.async.core-pool-size:2}") int corePoolSize,
+            @Value("${app.knowledge-base.search.async.max-pool-size:2}") int maxPoolSize,
+            @Value("${app.knowledge-base.search.async.queue-capacity:32}") int queueCapacity) {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setThreadNamePrefix("knowledge-search-");
+        executor.setCorePoolSize(corePoolSize);
+        executor.setMaxPoolSize(maxPoolSize);
+        executor.setQueueCapacity(queueCapacity);
+        executor.setWaitForTasksToCompleteOnShutdown(false);
+        executor.initialize();
+        return executor;
+    }
+
     @Bean(name = "knowledgeBootstrapExecutor")
     public ThreadPoolTaskExecutor knowledgeBootstrapExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();

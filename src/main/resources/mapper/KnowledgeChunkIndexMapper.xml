@@ -5,7 +5,9 @@
 
     <insert id="batchInsert">
         INSERT INTO knowledge_chunk_index
-        (file_hash, segment_id, segment_index, content, preview, character_count, embedding,
+        (file_hash, segment_id, segment_index, generation, content, preview, character_count, section_title, segment_kind, segmentation_mode, embedding,
+         semantic_summary, semantic_keywords, section_role, medical_entities_json, target_questions_json,
+         semantic_enriched_at, semantic_enrichment_model,
          title, doc_type, department, audience, version, effective_at, status, doctor_name,
          source_priority, keywords)
         VALUES
@@ -13,10 +15,21 @@
             (#{chunk.fileHash},
              #{chunk.segmentId},
              #{chunk.segmentIndex},
+             #{chunk.generation},
              #{chunk.content},
              #{chunk.preview},
              #{chunk.characterCount},
+             #{chunk.sectionTitle},
+             #{chunk.segmentKind},
+             #{chunk.segmentationMode},
              #{chunk.embedding},
+             #{chunk.semanticSummary},
+             #{chunk.semanticKeywords},
+             #{chunk.sectionRole},
+             #{chunk.medicalEntitiesJson},
+             #{chunk.targetQuestionsJson},
+             #{chunk.semanticEnrichedAt},
+             #{chunk.semanticEnrichmentModel},
              #{chunk.title},
              #{chunk.docType},
              #{chunk.department},

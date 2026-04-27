@@ -27,6 +27,10 @@ public class KnowledgeDocumentDetail {
     private String doctorName;
     private Integer sourcePriority;
     private String keywords;
+    private String segmentationMode;
+    private boolean semanticEnhanced;
+    private String indexUpgradeState;
+    private String indexUpgradeMessage;
     private String extractedText;
     private List<KnowledgeChunkInfo> chunks = new ArrayList<>();
 
@@ -212,6 +216,38 @@ public class KnowledgeDocumentDetail {
 
     public void setKeywords(String keywords) {
         this.keywords = keywords;
+    }
+
+    public String getSegmentationMode() {
+        return segmentationMode;
+    }
+
+    public void setSegmentationMode(String segmentationMode) {
+        this.segmentationMode = segmentationMode;
+    }
+
+    public boolean isSemanticEnhanced() {
+        return semanticEnhanced;
+    }
+
+    public void setSemanticEnhanced(boolean semanticEnhanced) {
+        this.semanticEnhanced = semanticEnhanced;
+    }
+
+    public String getIndexUpgradeState() {
+        return indexUpgradeState;
+    }
+
+    public void setIndexUpgradeState(String indexUpgradeState) {
+        this.indexUpgradeState = indexUpgradeState;
+    }
+
+    public String getIndexUpgradeMessage() {
+        return indexUpgradeMessage;
+    }
+
+    public void setIndexUpgradeMessage(String indexUpgradeMessage) {
+        this.indexUpgradeMessage = indexUpgradeMessage;
     }
 
     public String getExtractedText() {

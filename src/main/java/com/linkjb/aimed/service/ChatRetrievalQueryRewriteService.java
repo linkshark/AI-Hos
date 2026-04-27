@@ -18,6 +18,9 @@ import java.util.Set;
 
 @Service
 public class ChatRetrievalQueryRewriteService {
+    private static final int MODEL_REWRITE_MAX_QUERY_LENGTH = 32;
+    private static final int MODEL_REWRITE_MAX_RECENT_SUMMARIES = 2;
+    private static final int MODEL_REWRITE_MAX_RECENT_SUMMARY_CHARS = 48;
 
     private final QueryRewriteModelService modelService;
     private final MedicalStandardLookupService medicalStandardLookupService;
@@ -63,8 +66,10 @@ public class ChatRetrievalQueryRewriteService {
 
         String intentType = classifyIntent(normalizedQuery);
         List<String> currentAnchors = KnowledgeSearchLexicon.detectMedicalAnchors(normalizedQuery);
-        List<KnowledgeRetrievalMatchedDiseaseEntity> currentDiseaseEntities = medicalStandardLookupService.matchDiseaseEntities(normalizedQuery, 4);
         boolean excludedIntent = isExcludedIntent(intentType);
+        List<KnowledgeRetrievalMatchedDiseaseEntity> currentDiseaseEntities = shouldResolveDiseaseEntities(normalizedQuery, currentAnchors, excludedIntent)
+                ? medicalStandardLookupService.matchDiseaseEntities(normalizedQuery, 4)
+                : List.of();
         List<String> contextMessagesUsed = new ArrayList<>();
 
         String effectiveQuery = buildRuleEffectiveQuery(normalizedQuery, recentUserMessages, currentAnchors, currentDiseaseEntities, contextMessagesUsed, excludedIntent);
@@ -73,7 +78,7 @@ public class ChatRetrievalQueryRewriteService {
 
         QueryRewriteModelService.ModelRewriteResult modelResult = maybeRewriteWithModel(
                 normalizedQuery,
-                recentUserMessages,
+                trimRecentSummaries(recentUserMessages),
                 effectiveAnchors,
                 effectiveQuery,
                 intentType
@@ -109,7 +114,7 @@ public class ChatRetrievalQueryRewriteService {
                                                                              List<String> medicalAnchors,
                                                                              String ruleEffectiveQuery,
                                                                              String intentType) {
-        if ("RULE_ONLY".equals(mode) || !enabled) {
+        if ("RULE_ONLY".equals(mode) || !enabled || !shouldAttemptModelRewrite(normalizedQuery, recentUserMessages, medicalAnchors, ruleEffectiveQuery, intentType)) {
             return new QueryRewriteModelService.ModelRewriteResult(null, false);
         }
         return modelService.rewrite(normalizedQuery, recentUserMessages, medicalAnchors, ruleEffectiveQuery, intentType);
@@ -153,16 +158,59 @@ public class ChatRetrievalQueryRewriteService {
     private List<String> resolveDiseaseKeywords(List<KnowledgeRetrievalMatchedDiseaseEntity> diseaseEntities,
                                                 List<String> fallbackAnchors) {
         Set<String> keywords = new LinkedHashSet<>();
-        if (diseaseEntities != null) {
-            diseaseEntities.stream()
-                    .map(item -> StringUtils.hasText(item.diseaseName()) ? item.diseaseName() : item.englishName())
-                    .filter(StringUtils::hasText)
-                    .forEach(keywords::add);
-        }
-        if (keywords.isEmpty() && fallbackAnchors != null) {
+        if (fallbackAnchors != null) {
             keywords.addAll(fallbackAnchors);
         }
+        if (diseaseEntities != null && !diseaseEntities.isEmpty()) {
+            Set<String> normalizedAnchors = (fallbackAnchors == null ? List.<String>of() : fallbackAnchors).stream()
+                    .filter(StringUtils::hasText)
+                    .map(String::trim)
+                    .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+            for (KnowledgeRetrievalMatchedDiseaseEntity diseaseEntity : diseaseEntities) {
+                String candidate = StringUtils.hasText(diseaseEntity.diseaseName())
+                        ? diseaseEntity.diseaseName().trim()
+                        : StringUtils.hasText(diseaseEntity.englishName()) ? diseaseEntity.englishName().trim() : null;
+                if (!StringUtils.hasText(candidate)) {
+                    continue;
+                }
+                if (normalizedAnchors.isEmpty() || isReasonableDiseaseExpansion(candidate, normalizedAnchors)) {
+                    keywords.add(candidate);
+                }
+            }
+        }
         return keywords.stream().filter(StringUtils::hasText).toList();
+    }
+
+    private boolean isReasonableDiseaseExpansion(String candidate, Set<String> anchors) {
+        for (String anchor : anchors) {
+            if (!StringUtils.hasText(anchor)) {
+                continue;
+            }
+            String trimmedAnchor = anchor.trim();
+            if (candidate.equals(trimmedAnchor)) {
+                return true;
+            }
+            if (candidate.contains(trimmedAnchor)) {
+                int extraChars = candidate.length() - trimmedAnchor.length();
+                if (extraChars <= 4 && !containsScenarioQualifier(candidate, trimmedAnchor)) {
+                    return true;
+                }
+            }
+            if (trimmedAnchor.contains(candidate) && trimmedAnchor.length() - candidate.length() <= 4) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean containsScenarioQualifier(String candidate, String anchor) {
+        String remainder = candidate.replace(anchor, "");
+        return remainder.contains("妊娠")
+                || remainder.contains("新生儿")
+                || remainder.contains("婴儿")
+                || remainder.contains("儿童")
+                || remainder.contains("老年")
+                || remainder.contains("成人");
     }
 
     private ComplaintContext findRecentComplaintContext(List<String> recentUserMessages) {
@@ -175,7 +223,9 @@ public class ChatRetrievalQueryRewriteService {
                     recentUserMessage,
                     anchors,
                     KnowledgeSearchLexicon.extractIntentRewriteHints(recentUserMessage),
-                    medicalStandardLookupService.matchDiseaseEntities(recentUserMessage, 4)
+                    shouldResolveDiseaseEntities(recentUserMessage, anchors, false)
+                            ? medicalStandardLookupService.matchDiseaseEntities(recentUserMessage, 4)
+                            : List.of()
             );
         }
         return null;
@@ -227,6 +277,82 @@ public class ChatRetrievalQueryRewriteService {
                 || "DOCTOR".equals(intentType)
                 || "DEPARTMENT".equals(intentType)
                 || "GUIDE".equals(intentType);
+    }
+
+    private boolean shouldResolveDiseaseEntities(String normalizedQuery,
+                                                 List<String> medicalAnchors,
+                                                 boolean excludedIntent) {
+        if (excludedIntent || !StringUtils.hasText(normalizedQuery)) {
+            return false;
+        }
+        if (!medicalAnchors.isEmpty()) {
+            return true;
+        }
+        return normalizedQuery.length() <= 18 && containsDiseaseSuffix(normalizedQuery);
+    }
+
+    private boolean shouldAttemptModelRewrite(String normalizedQuery,
+                                             List<String> recentUserMessages,
+                                             List<String> medicalAnchors,
+                                             String ruleEffectiveQuery,
+                                             String intentType) {
+        if (!StringUtils.hasText(normalizedQuery) || isExcludedIntent(intentType)) {
+            return false;
+        }
+        if (normalizedQuery.length() > MODEL_REWRITE_MAX_QUERY_LENGTH) {
+            return false;
+        }
+        if (medicalAnchors.isEmpty()) {
+            return false;
+        }
+        if (containsExactLookupHint(normalizedQuery)) {
+            return false;
+        }
+        boolean weakFollowUp = containsWeakFollowUpHint(normalizedQuery) && !recentUserMessages.isEmpty();
+        boolean weakRuleResult = !StringUtils.hasText(ruleEffectiveQuery)
+                || ruleEffectiveQuery.equals(normalizedQuery)
+                || ruleEffectiveQuery.length() <= normalizedQuery.length() + 4;
+        return weakFollowUp || weakRuleResult;
+    }
+
+    private List<String> trimRecentSummaries(List<String> recentUserMessages) {
+        if (recentUserMessages == null || recentUserMessages.isEmpty()) {
+            return List.of();
+        }
+        return recentUserMessages.stream()
+                .filter(StringUtils::hasText)
+                .limit(MODEL_REWRITE_MAX_RECENT_SUMMARIES)
+                .map(text -> text.length() > MODEL_REWRITE_MAX_RECENT_SUMMARY_CHARS
+                        ? text.substring(0, MODEL_REWRITE_MAX_RECENT_SUMMARY_CHARS)
+                        : text)
+                .toList();
+    }
+
+    private boolean containsWeakFollowUpHint(String query) {
+        return query.contains("没有别的症状")
+                || query.contains("无其他症状")
+                || query.contains("我现在")
+                || query.contains("就这些")
+                || query.contains("先这样")
+                || query.contains("目前");
+    }
+
+    private boolean containsExactLookupHint(String query) {
+        return query.matches(".*20\\d{2}.*版.*")
+                || query.contains("指南")
+                || query.contains("规范")
+                || query.contains("共识")
+                || query.contains("主任")
+                || query.contains("院士");
+    }
+
+    private boolean containsDiseaseSuffix(String query) {
+        return query.contains("癌")
+                || query.contains("瘤")
+                || query.contains("炎")
+                || query.contains("病")
+                || query.contains("症")
+                || query.contains("感染");
     }
 
     private KnowledgeRetrievalQueryRewriteInfo passthrough(String rawQuery, List<String> medicalAnchors, long durationMs) {

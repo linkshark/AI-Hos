@@ -29,8 +29,12 @@ class ChatApplicationServiceTest {
                 new TraceIdProvider(),
                 new ChatIntentAnalysisService(),
                 null,
+                null,
+                null,
+                null,
+                null,
                 new ObjectMapper(),
-                ChatApplicationService.LOCAL_OLLAMA,
+                ChatApplicationService.LOCAL_OMLX,
                 true,
                 true
         );
@@ -38,7 +42,8 @@ class ChatApplicationServiceTest {
         assertEquals(ChatApplicationService.QWEN_ONLINE_FAST, service.normalizeProvider(ChatApplicationService.QWEN_ONLINE));
         assertEquals(ChatApplicationService.QWEN_ONLINE_FAST, service.normalizeProvider(ChatApplicationService.QWEN_ONLINE_FAST));
         assertEquals(ChatApplicationService.QWEN_ONLINE_DEEP, service.normalizeProvider(ChatApplicationService.QWEN_ONLINE_DEEP));
-        assertEquals(ChatApplicationService.LOCAL_OLLAMA, service.normalizeProvider(ChatApplicationService.LOCAL_OLLAMA));
+        assertEquals(ChatApplicationService.LOCAL_OMLX, service.normalizeProvider(ChatApplicationService.LOCAL_OLLAMA));
+        assertEquals(ChatApplicationService.LOCAL_OMLX, service.normalizeProvider(ChatApplicationService.LOCAL_OMLX));
     }
 
     @Test
@@ -56,6 +61,10 @@ class ChatApplicationServiceTest {
                 new TraceIdProvider(),
                 new ChatIntentAnalysisService(),
                 null,
+                null,
+                null,
+                null,
+                null,
                 new ObjectMapper(),
                 ChatApplicationService.QWEN_ONLINE,
                 true,
@@ -67,7 +76,7 @@ class ChatApplicationServiceTest {
         assertEquals(ChatApplicationService.QWEN_ONLINE_FAST, response.defaultProvider());
         assertEquals(
                 List.of(
-                        ChatApplicationService.LOCAL_OLLAMA,
+                        ChatApplicationService.LOCAL_OMLX,
                         ChatApplicationService.QWEN_ONLINE_FAST,
                         ChatApplicationService.QWEN_ONLINE_DEEP
                 ),
@@ -90,8 +99,12 @@ class ChatApplicationServiceTest {
                 new TraceIdProvider(),
                 new ChatIntentAnalysisService(),
                 null,
+                null,
+                null,
+                null,
+                null,
                 new ObjectMapper(),
-                ChatApplicationService.LOCAL_OLLAMA,
+                ChatApplicationService.LOCAL_OMLX,
                 true,
                 true
         );
@@ -113,6 +126,8 @@ class ChatApplicationServiceTest {
                 1,
                 false,
                 12,
+                List.of(),
+                List.of(),
                 List.of(new HybridKnowledgeRetrieverService.RetrievedChunk(
                         "hash-1",
                         "hash-1-segment-1",
@@ -127,6 +142,14 @@ class ChatApplicationServiceTest {
                         null,
                         80,
                         "儿童 发热 咳嗽 流感",
+                        "重症提示",
+                        "SECTION",
+                        "STRUCTURED",
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
                         "国家卫健委-流行性感冒诊疗方案-2025.pdf",
                         null,
                         "儿童符合下列任何一条：超高热或持续高热超过 3 天；呼吸急促……",
@@ -137,7 +160,7 @@ class ChatApplicationServiceTest {
                         List.of(),
                         new dev.langchain4j.data.document.Metadata()
                 )),
-                new HybridKnowledgeRetrieverService.RetrievalTimings(1, 1, 1, false),
+                new HybridKnowledgeRetrieverService.RetrievalTimings(1, 1, 1, 3, "DONE"),
                 List.of(),
                 List.of("发烧"),
                 List.of(),
@@ -158,7 +181,7 @@ class ChatApplicationServiceTest {
     }
 
     @Test
-    void shouldBuildDynamicMcpRoutingMessageWithoutHardCodedToolCall() {
+    void shouldBuildMcpSummaryPromptWithoutSecondToolCallInstruction() {
         ChatApplicationService service = new ChatApplicationService(
                 null,
                 null,
@@ -172,27 +195,20 @@ class ChatApplicationServiceTest {
                 new TraceIdProvider(),
                 new ChatIntentAnalysisService(),
                 null,
+                null,
+                null,
+                null,
+                null,
                 new ObjectMapper(),
-                ChatApplicationService.LOCAL_OLLAMA,
+                ChatApplicationService.LOCAL_OMLX,
                 true,
                 true
         );
 
-        String routed = service.buildRoutedMessageForTest(
-                "杭州明天会下雨吗",
-                new ChatIntentAnalysisService.ChatIntentResult(
-                        "MCP_WEATHER",
-                        "MCP",
-                        false,
-                        "天气类问题走动态 MCP 工具，不需要知识库检索",
-                        "天气类问题走动态 MCP 工具，不需要知识库检索",
-                        0.95
-                )
-        );
+        String prompt = service.buildMcpSummaryPrompt("杭州明天会下雨吗", "status=SUCCESS\nmessage=有小雨");
 
-        assertTrue(routed.contains("动态 MCP 工具上下文"));
-        assertTrue(routed.contains("调用MCP工具"));
-        assertTrue(routed.contains("toolName 使用清单里的 tool 名称"));
-        assertFalse(routed.contains("callEnabledToolForAgent"));
+        assertTrue(prompt.contains("不要再次调用任何工具"));
+        assertTrue(prompt.contains("MCP 工具执行结果"));
+        assertTrue(prompt.contains("有小雨"));
     }
 }

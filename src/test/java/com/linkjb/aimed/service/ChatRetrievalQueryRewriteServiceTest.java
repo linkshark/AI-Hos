@@ -2,11 +2,13 @@ package com.linkjb.aimed.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.linkjb.aimed.entity.dto.response.knowledge.retrieval.KnowledgeRetrievalMatchedDiseaseEntity;
+import com.linkjb.aimed.entity.dto.response.knowledge.retrieval.KnowledgeRetrievalModelRewriteCandidate;
 import com.linkjb.aimed.entity.dto.response.knowledge.retrieval.KnowledgeRetrievalQueryRewriteInfo;
 import dev.langchain4j.model.chat.ChatModel;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -78,17 +80,84 @@ class ChatRetrievalQueryRewriteServiceTest {
         assertTrue(rewriteInfo.contextMessagesUsed().isEmpty());
     }
 
+    @Test
+    void shouldSkipModelRewriteForGuideIntent() {
+        CountingModelService modelService = countingModelService();
+        ChatRetrievalQueryRewriteService service = new ChatRetrievalQueryRewriteService(
+                modelService,
+                stubLookupService(),
+                true,
+                4,
+                "RULE_PLUS_MODEL_ACTIVE"
+        );
+
+        KnowledgeRetrievalQueryRewriteInfo rewriteInfo = service.rewriteInternalForTest(
+                "原发性肝癌指南 2024 版",
+                List.of("我感冒了 我该吃点什么药")
+        );
+
+        assertEquals(0, modelService.invocationCount());
+        assertTrue(rewriteInfo.effectiveQuery().contains("指南"));
+        assertFalse(rewriteInfo.effectiveQuery().contains("感冒"));
+    }
+
+    @Test
+    void shouldAttemptModelRewriteForWeakMedicalFollowUp() {
+        CountingModelService modelService = countingModelService();
+        ChatRetrievalQueryRewriteService service = new ChatRetrievalQueryRewriteService(
+                modelService,
+                stubLookupService(),
+                true,
+                4,
+                "RULE_PLUS_MODEL_DIAGNOSTIC"
+        );
+
+        service.rewriteInternalForTest(
+                "我现在30岁 没有别的症状",
+                List.of("我感冒了 我该吃点什么药")
+        );
+
+        assertEquals(1, modelService.invocationCount());
+    }
+
+    @Test
+    void shouldKeepMycoplasmaRewriteFocusedOnCoreDiseaseAnchors() {
+        ChatRetrievalQueryRewriteService service = new ChatRetrievalQueryRewriteService(
+                disabledModelService(),
+                stubLookupService(),
+                true,
+                4,
+                "RULE_ONLY"
+        );
+
+        KnowledgeRetrievalQueryRewriteInfo rewriteInfo = service.rewrite("肺炎支原体感染有什么表现");
+
+        assertTrue(rewriteInfo.effectiveQuery().contains("肺炎支原体感染"));
+        assertFalse(rewriteInfo.effectiveQuery().contains("妊娠合并"));
+        assertFalse(rewriteInfo.effectiveQuery().contains("新生儿"));
+    }
+
     private QueryRewriteModelService disabledModelService() {
         ChatModel noopModel = new ChatModel() {
         };
         return new QueryRewriteModelService(
                 new ObjectMapper(),
                 noopModel,
-                noopModel,
-                noopModel,
                 false,
-                "QWEN_ONLINE_FAST",
+                "ONLINE_FAST",
                 "DIAGNOSTIC_ONLY"
+        );
+    }
+
+    private CountingModelService countingModelService() {
+        ChatModel noopModel = new ChatModel() {
+        };
+        return new CountingModelService(
+                new ObjectMapper(),
+                noopModel,
+                true,
+                "OLLAMA",
+                "ACTIVE"
         );
     }
 
@@ -116,8 +185,71 @@ class ChatRetrievalQueryRewriteServiceTest {
                             1.0d
                     ));
                 }
+                if (query != null && query.contains("肺炎支原体感染")) {
+                    return List.of(
+                            new KnowledgeRetrievalMatchedDiseaseEntity(
+                                    "CN-RSP-MP",
+                                    "CN-RSP-201",
+                                    "妊娠合并支原体感染",
+                                    "Pregnancy with mycoplasma infection",
+                                    "alias",
+                                    1.0d
+                            ),
+                            new KnowledgeRetrievalMatchedDiseaseEntity(
+                                    "CN-RSP-MP-NEO",
+                                    "CN-RSP-202",
+                                    "新生儿支原体肺炎",
+                                    "Neonatal mycoplasma pneumonia",
+                                    "alias",
+                                    1.0d
+                            ),
+                            new KnowledgeRetrievalMatchedDiseaseEntity(
+                                    "CN-RSP-MP-CORE",
+                                    "CN-RSP-203",
+                                    "肺炎支原体感染",
+                                    "Mycoplasma pneumoniae infection",
+                                    "alias",
+                                    1.0d
+                            )
+                    );
+                }
                 return List.of();
             }
         };
+    }
+
+    private static final class CountingModelService extends QueryRewriteModelService {
+        private final AtomicInteger invocationCount = new AtomicInteger();
+
+        private CountingModelService(ObjectMapper objectMapper,
+                                     ChatModel queryRewriteChatModel,
+                                     boolean enabled,
+                                     String platform,
+                                     String mode) {
+            super(objectMapper, queryRewriteChatModel, enabled, platform, mode);
+        }
+
+        @Override
+        ModelRewriteResult rewrite(String currentQuery,
+                                   List<String> recentUserSummaries,
+                                   List<String> detectedMedicalAnchors,
+                                   String ruleEffectiveQuery,
+                                   String intentType) {
+            invocationCount.incrementAndGet();
+            return new ModelRewriteResult(
+                    new KnowledgeRetrievalModelRewriteCandidate(
+                            ruleEffectiveQuery,
+                            detectedMedicalAnchors,
+                            intentType,
+                            0.95d,
+                            List.of()
+                    ),
+                    true
+            );
+        }
+
+        private int invocationCount() {
+            return invocationCount.get();
+        }
     }
 }

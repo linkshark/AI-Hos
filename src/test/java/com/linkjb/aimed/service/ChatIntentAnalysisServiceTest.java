@@ -10,11 +10,11 @@ class ChatIntentAnalysisServiceTest {
     private final ChatIntentAnalysisService service = new ChatIntentAnalysisService();
 
     @Test
-    void shouldRequireRagForMedicalQuestion() {
+    void shouldRequireRagForBasicMedicalAdvice() {
         ChatIntentAnalysisService.ChatIntentResult result = service.analyze("我感冒咳嗽了怎么办");
 
         assertTrue(result.ragRequired());
-        assertTrue("MEDICAL_QA".equals(result.intentType()) || "HOSPITAL_QA".equals(result.intentType()));
+        assertTrue("MEDICAL_QA".equals(result.intentType()));
     }
 
     @Test
@@ -36,6 +36,20 @@ class ChatIntentAnalysisServiceTest {
     @Test
     void shouldRequireRagForMedicalLookupWithPoliteQueryVerb() {
         ChatIntentAnalysisService.ChatIntentResult result = service.analyze("帮我查一下早期肝癌怎么治疗");
+
+        assertTrue(result.ragRequired());
+    }
+
+    @Test
+    void shouldRequireRagForSpecificDiseaseManifestationQuestion() {
+        ChatIntentAnalysisService.ChatIntentResult result = service.analyze("肺炎支原体感染有什么表现");
+
+        assertTrue(result.ragRequired());
+    }
+
+    @Test
+    void shouldRequireRagForWeakMedicalFollowUp() {
+        ChatIntentAnalysisService.ChatIntentResult result = service.analyze("我现在30岁 没有别的症状");
 
         assertTrue(result.ragRequired());
     }

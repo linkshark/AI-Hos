@@ -61,4 +61,31 @@ public class RetryingEmbeddingModel implements EmbeddingModel {
             Thread.currentThread().interrupt();
         }
     }
+
+    public static void main(String[] args) {
+        String s = "SELECT\n" +
+                "charge_name AS xmmc,\n" +
+                "sum( total_amount ) AS je,\n" +
+                "sum(amount) as sl,\n" +
+                "CONCAT(\n" +
+                "( CASE WHEN insure_self_scale = 0 THEN '甲' WHEN 1 > self_scale > 0 THEN '乙' ELSE '丙' END ),\n" +
+                "'/',\n" +
+                "CONVERT ( insure_self_scale * 100, DECIMAL ( 12, 2 ) ),\n" +
+                "'/',\n" +
+                "CONCAT( CONVERT ( insure_self_scale * 100, DECIMAL ( 12, 2 ) ), '%' ) \n" +
+                ") as bz,\n" +
+                "ROUND(sum( total_amount )/sum(amount),12) as dj\n" +
+                "FROM\n" +
+                "sis.fp_chargedetail_0 a\n" +
+                "LEFT JOIN pss.ab_drugspec b ON a.charge_code = b.drug_spec_id\n" +
+                "LEFT JOIN pub.ab_charge c ON c.charge_item_id = a.charge_code \n" +
+                "WHERE\n" +
+                "account_id =#{accountId}\n" +
+                "AND a.invisible_self_paying = 1 \n" +
+                "GROUP BY\n" +
+                "a.charge_code,\n" +
+                "a.drug_treatment_flag\n" +
+                "HAVING je>0\n";
+        System.out.println(s);
+    }
 }

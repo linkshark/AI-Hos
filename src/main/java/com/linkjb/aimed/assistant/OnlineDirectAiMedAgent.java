@@ -12,7 +12,7 @@ import static dev.langchain4j.service.spring.AiServiceWiringMode.EXPLICIT;
         wiringMode = EXPLICIT,
         streamingChatModel = "onlineDeepStreamingChatModel",
         chatMemoryProvider = "onlineDeepChatMemoryProviderAiMed",
-        tools = {"appointmentTools", "dynamicMcpTools"}
+        tools = {"appointmentTools"}
 )
 public interface OnlineDirectAiMedAgent {
     @SystemMessage(fromResource = "prompt-templates/aimed-prompt-template.txt")

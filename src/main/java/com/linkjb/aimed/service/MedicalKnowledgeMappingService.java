@@ -131,11 +131,16 @@ public class MedicalKnowledgeMappingService {
         if (knowledgeHashes == null || knowledgeHashes.isEmpty()) {
             return List.of();
         }
-        return medicalStandardDocMappingMapper.selectList(new LambdaQueryWrapper<MedicalDocMapping>()
-                        .in(MedicalDocMapping::getKnowledgeHash, knowledgeHashes))
+        List<MedicalDocMapping> mappings = medicalStandardDocMappingMapper.selectList(new LambdaQueryWrapper<MedicalDocMapping>()
+                .in(MedicalDocMapping::getKnowledgeHash, knowledgeHashes));
+        Map<String, MedicalConcept> conceptMap = conceptsByCode(mappings.stream()
+                .map(MedicalDocMapping::getConceptCode)
+                .filter(StringUtils::hasText)
+                .toList());
+        return mappings
                 .stream()
                 .map(mapping -> {
-                    MedicalConcept entity = entityByUri(mapping.getConceptCode());
+                    MedicalConcept entity = conceptMap.get(mapping.getConceptCode());
                     return new KnowledgeRetrievalDocumentEntityMatch(
                             mapping.getKnowledgeHash(),
                             mapping.getConceptCode(),
@@ -226,6 +231,20 @@ public class MedicalKnowledgeMappingService {
         return medicalStandardEntityMapper.selectOne(new LambdaQueryWrapper<MedicalConcept>()
                 .eq(MedicalConcept::getConceptCode, conceptCode)
                 .last("LIMIT 1"));
+    }
+
+    private Map<String, MedicalConcept> conceptsByCode(List<String> conceptCodes) {
+        if (conceptCodes == null || conceptCodes.isEmpty()) {
+            return Map.of();
+        }
+        return medicalStandardEntityMapper.selectList(new LambdaQueryWrapper<MedicalConcept>()
+                        .in(MedicalConcept::getConceptCode, conceptCodes))
+                .stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        MedicalConcept::getConceptCode,
+                        item -> item,
+                        (left, right) -> left
+                ));
     }
 
     private String firstNonBlank(String first, String second) {

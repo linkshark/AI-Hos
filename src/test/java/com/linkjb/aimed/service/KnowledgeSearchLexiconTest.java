@@ -72,4 +72,14 @@ class KnowledgeSearchLexiconTest {
         assertFalse(hints.contains("我现在"));
         assertFalse(hints.contains("没有别的症状"));
     }
+
+    @Test
+    void shouldExpandMycoplasmaPneumoniaAliases() {
+        List<String> tokens = KnowledgeSearchLexicon.expandQueryTokens("肺炎支原体感染有什么表现");
+
+        assertTrue(tokens.contains("肺炎支原体感染"));
+        assertTrue(tokens.contains("肺炎支原体肺炎"));
+        assertTrue(tokens.contains("支原体肺炎"));
+        assertTrue(tokens.contains("支原体感染"));
+    }
 }

@@ -1,6 +1,7 @@
 package com.linkjb.aimed.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.linkjb.aimed.entity.dto.response.chat.ChatStreamEvent;
 import com.linkjb.aimed.entity.dto.response.chat.ChatStreamMetadata;
 import com.linkjb.aimed.assistant.LocalDirectAiMedAgent;
 import com.linkjb.aimed.assistant.LocalStreamingAiMedAgent;
@@ -11,22 +12,37 @@ import com.linkjb.aimed.assistant.OnlineAiMedAgent;
 import com.linkjb.aimed.entity.dto.response.ChatProviderConfigResponse;
 import com.linkjb.aimed.config.skywalk.RequestTraceFilter;
 import com.linkjb.aimed.config.skywalk.TraceIdProvider;
+import com.linkjb.aimed.service.chat.ChatMetadataService;
+import com.linkjb.aimed.service.chat.ChatRoutingResult;
+import com.linkjb.aimed.service.chat.ChatRoutingService;
+import com.linkjb.aimed.service.chat.mcp.McpExecutionResult;
+import com.linkjb.aimed.service.chat.mcp.McpExecutionService;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.service.TokenStream;
 import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import org.apache.skywalking.apm.toolkit.trace.ActiveSpan;
 import org.apache.skywalking.apm.toolkit.trace.ConsumerWrapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.FluxSink;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -47,11 +63,18 @@ import java.util.concurrent.atomic.AtomicLong;
 public class ChatApplicationService {
 
     private static final Logger log = LoggerFactory.getLogger(ChatApplicationService.class);
+    public static final String LOCAL_OMLX = "LOCAL_OMLX";
+    /** 兼容旧前端缓存和历史请求值；当前本地模型实际走 OMLX。 */
     public static final String LOCAL_OLLAMA = "LOCAL_OLLAMA";
     public static final String QWEN_ONLINE = "QWEN_ONLINE";
     public static final String QWEN_ONLINE_FAST = "QWEN_ONLINE_FAST";
     public static final String QWEN_ONLINE_DEEP = "QWEN_ONLINE_DEEP";
+    public static final String STREAM_EVENT_MARKER = "\n\n[[AIMED_STREAM_EVENT]]";
     public static final String STREAM_METADATA_MARKER = "\n\n[[AIMED_STREAM_METADATA]]";
+    private static final String LOCAL_PROMPT_RESOURCE = "prompt-templates/aimed-prompt-template-local.txt";
+    private static final String ONLINE_PROMPT_RESOURCE = "prompt-templates/aimed-prompt-template.txt";
+    private static final String ONLINE_FAST_PROMPT_RESOURCE = "prompt-templates/aimed-prompt-template-online-fast.txt";
+    private static final Map<String, String> PROMPT_TEMPLATE_CACHE = new ConcurrentHashMap<>();
 
     private final LocalStreamingAiMedAgent localStreamingAiMedAgent;
     private final LocalDirectAiMedAgent localDirectAiMedAgent;
@@ -64,9 +87,13 @@ public class ChatApplicationService {
     private final VisionChatService visionChatService;
     private final TraceIdProvider traceIdProvider;
     private final ChatProviderPolicy chatProviderPolicy;
-    private final ChatStreamMetadataAssembler chatStreamMetadataAssembler;
     private final ChatIntentAnalysisService chatIntentAnalysisService;
-    private final McpServerAdminService mcpServerAdminService;
+    private final ChatRoutingService chatRoutingService;
+    private final ChatMetadataService chatMetadataService;
+    private final McpExecutionService mcpExecutionService;
+    private final StreamingChatModel localStreamingChatModel;
+    private final StreamingChatModel onlineFastStreamingChatModel;
+    private final StreamingChatModel onlineDeepStreamingChatModel;
 
     public ChatApplicationService(LocalStreamingAiMedAgent localStreamingAiMedAgent,
                                   LocalDirectAiMedAgent localDirectAiMedAgent,
@@ -80,8 +107,12 @@ public class ChatApplicationService {
                                   TraceIdProvider traceIdProvider,
                                   ChatIntentAnalysisService chatIntentAnalysisService,
                                   McpServerAdminService mcpServerAdminService,
+                                  McpToolInvocationPlanner mcpToolInvocationPlanner,
+                                  @Qualifier("localStreamingChatModel") StreamingChatModel localStreamingChatModel,
+                                  @Qualifier("onlineFastStreamingChatModel") StreamingChatModel onlineFastStreamingChatModel,
+                                  @Qualifier("onlineDeepStreamingChatModel") StreamingChatModel onlineDeepStreamingChatModel,
                                   ObjectMapper objectMapper,
-                                  @Value("${app.provider.default:LOCAL_OLLAMA}") String defaultProvider,
+                                  @Value("${app.provider.default:LOCAL_OMLX}") String defaultProvider,
                                   @Value("${app.provider.local-enabled:true}") boolean localProviderEnabled,
                                   @Value("${app.provider.online-enabled:true}") boolean onlineProviderEnabled) {
         this.localStreamingAiMedAgent = localStreamingAiMedAgent;
@@ -95,9 +126,13 @@ public class ChatApplicationService {
         this.visionChatService = visionChatService;
         this.traceIdProvider = traceIdProvider;
         this.chatIntentAnalysisService = chatIntentAnalysisService == null ? new ChatIntentAnalysisService() : chatIntentAnalysisService;
-        this.mcpServerAdminService = mcpServerAdminService;
+        this.chatRoutingService = new ChatRoutingService(this.chatIntentAnalysisService);
+        this.chatMetadataService = new ChatMetadataService(objectMapper, hybridKnowledgeRetrieverService);
+        this.mcpExecutionService = new McpExecutionService(mcpServerAdminService, mcpToolInvocationPlanner);
+        this.localStreamingChatModel = localStreamingChatModel;
+        this.onlineFastStreamingChatModel = onlineFastStreamingChatModel;
+        this.onlineDeepStreamingChatModel = onlineDeepStreamingChatModel;
         this.chatProviderPolicy = new ChatProviderPolicy(defaultProvider, localProviderEnabled, onlineProviderEnabled);
-        this.chatStreamMetadataAssembler = new ChatStreamMetadataAssembler(objectMapper, hybridKnowledgeRetrieverService, log);
     }
 
     public Flux<String> chat(Long memoryId, String message, String modelProvider) {
@@ -117,7 +152,7 @@ public class ChatApplicationService {
         log.info("chat.request provider={} memoryId={} chars={} attachments={}", provider, memoryId, textLength(message), fileCount(files));
         try {
             if (knowledgeBaseService.hasImageAttachments(files)) {
-                return Flux.just(visionChatService.analyze(memoryId, message, files, provider));
+                return visionChatService.analyzeStream(memoryId, message, files, provider);
             }
             String augmentedMessage = knowledgeBaseService.buildChatMessageWithAttachments(message, files);
             ChatRuntimeTrace runtimeTrace = new ChatRuntimeTrace(
@@ -147,14 +182,17 @@ public class ChatApplicationService {
                                    String message,
                                    String summaryFallbackQuery,
                                    ChatRuntimeTrace runtimeTrace) {
-        ChatIntentAnalysisService.ChatIntentResult intentResult = chatIntentAnalysisService.analyze(summaryFallbackQuery);
+        ChatRoutingResult routingResult = chatRoutingService.analyze(summaryFallbackQuery);
+        ChatIntentAnalysisService.ChatIntentResult intentResult = routingResult.intentResult();
         log.info("chat.intent provider={} memoryId={} intent={} routeTarget={} ragApplied={} reason={}",
                 provider, memoryId, intentResult.intentType(), intentResult.routeTarget(), intentResult.ragRequired(), intentResult.reason());
-        String routedMessage = buildRoutedMessage(message, intentResult);
-        if (chatProviderPolicy.isOnlineProvider(provider)) {
-            return startOnlineChat(provider, memoryId, routedMessage, summaryFallbackQuery, runtimeTrace, intentResult);
+        if (routingResult.mcpIntent()) {
+            return startMcpChat(provider, memoryId, message, summaryFallbackQuery, runtimeTrace, intentResult);
         }
-        return startLocalChat(provider, memoryId, routedMessage, summaryFallbackQuery, runtimeTrace, intentResult);
+        if (chatProviderPolicy.isOnlineProvider(provider)) {
+            return startOnlineChat(provider, memoryId, message, summaryFallbackQuery, runtimeTrace, intentResult);
+        }
+        return startLocalChat(provider, memoryId, message, summaryFallbackQuery, runtimeTrace, intentResult);
     }
 
     private Flux<String> startOnlineChat(String provider,
@@ -180,11 +218,9 @@ public class ChatApplicationService {
                                         String summaryFallbackQuery,
                                         ChatRuntimeTrace runtimeTrace,
                                         ChatIntentAnalysisService.ChatIntentResult intentResult) {
-        // 本地 Ollama 仍按 token 流输出，前端继续用统一的流式解码逻辑消费。
+        // 本地模型仍按 token 流输出，前端继续用统一的流式解码逻辑消费。
         // 这里多做了一层“最终文本兜底”，是因为本地模型偶发会出现 partial 很少、complete 里才有稳定正文的情况。
-        TokenStream tokenStream = intentResult.ragRequired()
-                ? localStreamingAiMedAgent.chat(memoryId, message)
-                : localDirectAiMedAgent.chat(memoryId, message);
+        TokenStream tokenStream = selectLocalTokenStream(memoryId, message, intentResult);
         return Flux.create(emitter -> {
             long startedAt = System.nanoTime();
             AtomicInteger chunkCount = new AtomicInteger();
@@ -225,7 +261,7 @@ public class ChatApplicationService {
                         log.info("model.stream.complete provider={} memoryId={} chunks={} chars={} durationMs={} finishReason={} outputTokens={}",
                                 provider, memoryId, chunkCount.get(), charCount.get(), durationMs(startedAt),
                                 finishReason(response), outputTokenCount(response));
-                        String metadataChunk = chatStreamMetadataAssembler.encodeWithMarker(STREAM_METADATA_MARKER, metadata);
+                        String metadataChunk = chatMetadataService.encodeWithMarker(STREAM_METADATA_MARKER, metadata);
                         if (StringUtils.hasText(metadataChunk)) {
                             emitter.next(metadataChunk);
                         }
@@ -248,8 +284,180 @@ public class ChatApplicationService {
         HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary = resolveRetrievalSummary(provider, memoryId, summaryFallbackQuery, intentResult);
         ChatStreamMetadata metadata = buildStreamMetadata(runtimeTrace, intentResult, retrievalSummary);
         logRetrievalSummary(provider, memoryId, retrievalSummary);
-        String metadataChunk = chatStreamMetadataAssembler.encodeWithMarker(STREAM_METADATA_MARKER, metadata);
+        String metadataChunk = chatMetadataService.encodeWithMarker(STREAM_METADATA_MARKER, metadata);
         return StringUtils.hasText(metadataChunk) ? Flux.just(metadataChunk) : Flux.empty();
+    }
+
+    private Flux<String> startMcpChat(String provider,
+                                      Long memoryId,
+                                      String message,
+                                      String summaryFallbackQuery,
+                                      ChatRuntimeTrace runtimeTrace,
+                                      ChatIntentAnalysisService.ChatIntentResult intentResult) {
+        runtimeTrace.setToolMode("MCP");
+        return emitStreamEvent(new ChatStreamEvent("MCP", "PLAN", "RUNNING", "工具规划中",
+                        "正在选择最匹配的 MCP 工具", null, 0))
+                .concatWith(Flux.defer(() -> executeMcpChat(provider, memoryId, message, summaryFallbackQuery, runtimeTrace, intentResult)));
+    }
+
+    private Flux<String> executeMcpChat(String provider,
+                                        Long memoryId,
+                                        String message,
+                                        String summaryFallbackQuery,
+                                        ChatRuntimeTrace runtimeTrace,
+                                        ChatIntentAnalysisService.ChatIntentResult intentResult) {
+        McpExecutionResult executionResult = mcpExecutionService.execute(message);
+        runtimeTrace.recordMcpPlan(executionResult.planDurationMs(), executionResult.toolName());
+        runtimeTrace.recordMcpCall(
+                executionResult.callDurationMs(),
+                executionResult.toolName(),
+                executionResult.callStatus(),
+                executionResult.callDetail()
+        );
+        Flux<String> eventStream = Flux.fromIterable(executionResult.events()).concatMap(this::emitStreamEvent);
+        return eventStream.concatWith(summarizeMcpResult(
+                provider,
+                memoryId,
+                message,
+                summaryFallbackQuery,
+                executionResult.toolResult(),
+                runtimeTrace,
+                intentResult
+        ));
+    }
+
+    private Flux<String> summarizeMcpResult(String provider,
+                                            Long memoryId,
+                                            String originalMessage,
+                                            String summaryFallbackQuery,
+                                            String toolResult,
+                                            ChatRuntimeTrace runtimeTrace,
+                                            ChatIntentAnalysisService.ChatIntentResult intentResult) {
+        StreamingChatModel summaryModel = selectMcpSummaryModel(provider);
+        String promptResource = selectPromptResource(provider);
+        String summaryPrompt = buildMcpSummaryPrompt(originalMessage, toolResult);
+        return streamSummaryModel(provider, memoryId, summaryFallbackQuery, runtimeTrace, intentResult, summaryModel, promptResource, summaryPrompt);
+    }
+
+    private Flux<String> streamSummaryModel(String provider,
+                                            Long memoryId,
+                                            String summaryFallbackQuery,
+                                            ChatRuntimeTrace runtimeTrace,
+                                            ChatIntentAnalysisService.ChatIntentResult intentResult,
+                                            StreamingChatModel model,
+                                            String promptResource,
+                                            String summaryPrompt) {
+        List<ChatMessage> messages = List.of(
+                SystemMessage.from(loadPromptTemplate(promptResource)),
+                UserMessage.from(summaryPrompt)
+        );
+        return Flux.create(emitter -> {
+            long startedAt = System.nanoTime();
+            AtomicInteger chunkCount = new AtomicInteger();
+            AtomicLong charCount = new AtomicLong();
+            StringBuilder streamedText = new StringBuilder();
+            String requestTraceId = runtimeTrace.traceId();
+            log.info("mcp.summary.stream.start provider={} memoryId={} chars={}", provider, memoryId, summaryPrompt.length());
+            model.chat(messages, new StreamingChatResponseHandler() {
+                @Override
+                public void onPartialResponse(String partialResponse) {
+                    tracedConsumer(requestTraceId, "chat.mcp.summary.partial", (String partial) -> {
+                        chunkCount.incrementAndGet();
+                        charCount.addAndGet(partial == null ? 0 : partial.length());
+                        if (runtimeTrace.firstTokenLatencyMs() < 0) {
+                            runtimeTrace.setFirstTokenLatencyMs(durationMs(runtimeTrace.requestStartedAt()));
+                            log.info("model.stream.first_chunk provider={} memoryId={} latencyMs={}",
+                                    provider, memoryId, runtimeTrace.firstTokenLatencyMs());
+                        }
+                        if (partial != null) {
+                            streamedText.append(partial);
+                        }
+                        emitter.next(partial);
+                    }).accept(partialResponse);
+                }
+
+                @Override
+                public void onCompleteResponse(ChatResponse response) {
+                    tracedConsumer(requestTraceId, "chat.mcp.summary.complete", (ChatResponse completedResponse) -> {
+                        runtimeTrace.recordMcpResult(durationMs(startedAt));
+                        HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary = resolveRetrievalSummary(provider, memoryId, summaryFallbackQuery, intentResult);
+                        ChatStreamMetadata metadata = buildStreamMetadata(runtimeTrace, intentResult, retrievalSummary);
+                        logRetrievalSummary(provider, memoryId, retrievalSummary);
+                        String finalText = finalResponseText(completedResponse);
+                        if (!StringUtils.hasText(finalText) && !StringUtils.hasText(streamedText.toString())) {
+                            finalText = fallbackAnswerForSkippedRag(intentResult);
+                        }
+                        if (shouldEmitFinalText(streamedText.toString(), finalText)) {
+                            emitter.next(finalText);
+                        }
+                        log.info("mcp.summary.stream.complete provider={} memoryId={} chunks={} chars={} durationMs={} finishReason={} outputTokens={}",
+                                provider, memoryId, chunkCount.get(), charCount.get(), durationMs(startedAt),
+                                finishReason(completedResponse), outputTokenCount(completedResponse));
+                        String metadataChunk = chatMetadataService.encodeWithMarker(STREAM_METADATA_MARKER, metadata);
+                        if (StringUtils.hasText(metadataChunk)) {
+                            emitter.next(metadataChunk);
+                        }
+                        emitter.complete();
+                    }).accept(response);
+                }
+
+                @Override
+                public void onError(Throwable error) {
+                    tracedConsumer(requestTraceId, "chat.mcp.summary.error", (Throwable throwable) -> {
+                        runtimeTrace.recordMcpResult(durationMs(startedAt));
+                        log.error("mcp.summary.stream.failed provider={} memoryId={} chunks={} chars={} durationMs={}",
+                                provider, memoryId, chunkCount.get(), charCount.get(), durationMs(startedAt), throwable);
+                        emitter.error(throwable);
+                    }).accept(error);
+                }
+            });
+        }, FluxSink.OverflowStrategy.BUFFER);
+    }
+
+    private TokenStream selectLocalTokenStream(Long memoryId,
+                                               String message,
+                                               ChatIntentAnalysisService.ChatIntentResult intentResult) {
+        // 本地模型只区分 RAG 与直答两条稳定通道；首字优化放在 oMLX 配置层处理。
+        if (intentResult != null && intentResult.ragRequired()) {
+            return localStreamingAiMedAgent.chat(memoryId, message);
+        }
+        return localDirectAiMedAgent.chat(memoryId, message);
+    }
+
+    private StreamingChatModel selectMcpSummaryModel(String provider) {
+        if (chatProviderPolicy.isOnlineProvider(provider)) {
+            return QWEN_ONLINE_FAST.equals(provider) ? onlineFastStreamingChatModel : onlineDeepStreamingChatModel;
+        }
+        return localStreamingChatModel;
+    }
+
+    private String selectPromptResource(String provider) {
+        if (chatProviderPolicy.isOnlineProvider(provider)) {
+            return QWEN_ONLINE_FAST.equals(provider) ? ONLINE_FAST_PROMPT_RESOURCE : ONLINE_PROMPT_RESOURCE;
+        }
+        return LOCAL_PROMPT_RESOURCE;
+    }
+
+    private Flux<String> emitStreamEvent(ChatStreamEvent event) {
+        String eventChunk = chatMetadataService.encodeEventWithMarker(STREAM_EVENT_MARKER, event);
+        return StringUtils.hasText(eventChunk) ? Flux.just(eventChunk) : Flux.empty();
+    }
+
+    String buildMcpSummaryPrompt(String originalMessage, String toolResult) {
+        return """
+                当前用户问题：
+                %s
+
+                MCP 工具执行结果：
+                %s
+
+                回答要求：
+                - 这不是第一次对话，不要打招呼，不要自我介绍。
+                - 这轮不要使用知识库检索结果。
+                - 不要再次调用任何工具。
+                - 直接基于工具结果用中文简洁回答用户原问题。
+                - 如果工具结果失败、未找到工具或参数不足，明确说明当前限制，并告诉用户下一步该怎么做。
+                """.formatted(originalMessage, toolResult);
     }
 
     private Flux<String> selectOnlineSource(boolean isFastProvider,
@@ -325,7 +533,7 @@ public class ChatApplicationService {
         if (summary != null) {
             return summary;
         }
-        // 正常情况下，Agent 内部的 ContentRetriever 会把摘要放进 ThreadLocal。
+        // 正常情况下，检索摘要会先写入显式的 summary store；
         // 只有在异常边界或本地模型特殊结束路径下，才需要这里兜底再查一次。
         HybridKnowledgeRetrieverService.RetrievalProfile profile =
                 chatProviderPolicy.isOnlineProvider(provider)
@@ -335,7 +543,7 @@ public class ChatApplicationService {
     }
 
     public ChatStreamMetadata consumeCompletedStreamMetadata(String traceId) {
-        return chatStreamMetadataAssembler.consume(traceId);
+        return chatMetadataService.consume(traceId);
     }
 
     private int fileCount(MultipartFile[] files) {
@@ -349,7 +557,7 @@ public class ChatApplicationService {
     private ChatStreamMetadata buildStreamMetadata(ChatRuntimeTrace runtimeTrace,
                                                    ChatIntentAnalysisService.ChatIntentResult intentResult,
                                                    HybridKnowledgeRetrieverService.RetrievalSummary retrievalSummary) {
-        return chatStreamMetadataAssembler.buildAndRemember(
+        ChatStreamMetadata metadata = chatMetadataService.buildAndRemember(
                 runtimeTrace.traceId(),
                 runtimeTrace.provider(),
                 runtimeTrace.requestStartedAt(),
@@ -360,6 +568,8 @@ public class ChatApplicationService {
                 intentResult,
                 retrievalSummary
         );
+        appendMcpTraceStages(metadata, runtimeTrace);
+        return metadata;
     }
 
     private String finishReason(ChatResponse response) {
@@ -495,31 +705,6 @@ public class ChatApplicationService {
         return "当前问题不需要知识库检索，但模型暂时没有产出稳定回答，请换一种说法再试。";
     }
 
-    private String buildRoutedMessage(String message, ChatIntentAnalysisService.ChatIntentResult intentResult) {
-        if (intentResult == null || intentResult.ragRequired() || !"MCP".equals(intentResult.routeTarget())) {
-            return message;
-        }
-        String toolContext = mcpServerAdminService == null ? "当前没有启用的 MCP 服务。" : mcpServerAdminService.describeEnabledToolsForAgent();
-        return """
-                当前用户问题：
-                %s
-
-                动态 MCP 工具上下文：
-                %s
-
-                执行要求：
-                - 这轮不要使用知识库检索结果。
-                - 必须从上面的动态 MCP 工具清单中选择最匹配的工具。
-                - 直接调用“调用MCP工具”，toolName 使用清单里的 tool 名称；argumentsJson 必须是 JSON object 字符串。
-                - 如果没有匹配工具，明确说明当前没有可用工具，不要输出医疗问答兜底。
-                - 工具返回后，基于工具结果用中文简洁回答用户原问题。
-                """.formatted(message, toolContext);
-    }
-
-    String buildRoutedMessageForTest(String message, ChatIntentAnalysisService.ChatIntentResult intentResult) {
-        return buildRoutedMessage(message, intentResult);
-    }
-
     private <T> Consumer<T> tracedConsumer(String requestTraceId, String operationName, Consumer<T> delegate) {
         return ConsumerWrapper.of(value -> {
             Map<String, String> previous = MDC.getCopyOfContextMap();
@@ -545,6 +730,54 @@ public class ChatApplicationService {
         });
     }
 
+    private void appendMcpTraceStages(ChatStreamMetadata metadata, ChatRuntimeTrace runtimeTrace) {
+        if (metadata == null || runtimeTrace == null || !"MCP".equals(runtimeTrace.toolMode())) {
+            return;
+        }
+        List<com.linkjb.aimed.entity.dto.response.chat.ChatTraceStage> stages = metadata.getTraceStages();
+        int insertIndex = Math.max(0, stages.size() - 1);
+        if (runtimeTrace.mcpPlanDurationMs() > 0 || StringUtils.hasText(runtimeTrace.mcpToolName())) {
+            stages.add(insertIndex++, new com.linkjb.aimed.entity.dto.response.chat.ChatTraceStage(
+                    "mcp_plan",
+                    "MCP 规划",
+                    runtimeTrace.mcpPlanDurationMs(),
+                    StringUtils.hasText(runtimeTrace.mcpToolName()) ? "DONE" : "SKIPPED",
+                    StringUtils.hasText(runtimeTrace.mcpToolName()) ? runtimeTrace.mcpToolName() : "未匹配到工具"
+            ));
+        }
+        if (runtimeTrace.mcpCallDurationMs() > 0 || StringUtils.hasText(runtimeTrace.mcpCallStatus())) {
+            stages.add(insertIndex++, new com.linkjb.aimed.entity.dto.response.chat.ChatTraceStage(
+                    "mcp_call",
+                    "MCP 调用",
+                    runtimeTrace.mcpCallDurationMs(),
+                    "SUCCESS".equals(runtimeTrace.mcpCallStatus()) ? "DONE" : "ERROR",
+                    runtimeTrace.mcpCallDetail()
+            ));
+        }
+        if (runtimeTrace.mcpResultDurationMs() > 0) {
+            stages.add(insertIndex, new com.linkjb.aimed.entity.dto.response.chat.ChatTraceStage(
+                    "mcp_result",
+                    "MCP 结果总结",
+                    runtimeTrace.mcpResultDurationMs(),
+                    "DONE",
+                    "基于工具结果生成最终回答"
+            ));
+        }
+    }
+
+    private String loadPromptTemplate(String resourcePath) {
+        return PROMPT_TEMPLATE_CACHE.computeIfAbsent(resourcePath, this::readPromptTemplate);
+    }
+
+    private String readPromptTemplate(String resourcePath) {
+        try {
+            ClassPathResource resource = new ClassPathResource(resourcePath);
+            return new String(resource.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException exception) {
+            throw new IllegalStateException("无法读取 prompt 模板: " + resourcePath, exception);
+        }
+    }
+
     private static final class ChatRuntimeTrace {
         private final String traceId;
         private final String provider;
@@ -553,6 +786,12 @@ public class ChatApplicationService {
         private final boolean hasAttachments;
         private volatile long firstTokenLatencyMs = -1;
         private volatile String toolMode = "STANDARD";
+        private volatile long mcpPlanDurationMs = 0;
+        private volatile long mcpCallDurationMs = 0;
+        private volatile long mcpResultDurationMs = 0;
+        private volatile String mcpToolName = "";
+        private volatile String mcpCallStatus = "";
+        private volatile String mcpCallDetail = "";
 
         private ChatRuntimeTrace(String traceId,
                                  String provider,
@@ -600,6 +839,46 @@ public class ChatApplicationService {
 
         private void setToolMode(String toolMode) {
             this.toolMode = toolMode;
+        }
+
+        private void recordMcpPlan(long durationMs, String toolName) {
+            this.mcpPlanDurationMs = Math.max(0, durationMs);
+            this.mcpToolName = toolName == null ? "" : toolName;
+        }
+
+        private void recordMcpCall(long durationMs, String toolName, String status, String detail) {
+            this.mcpCallDurationMs = Math.max(0, durationMs);
+            this.mcpToolName = toolName == null ? this.mcpToolName : toolName;
+            this.mcpCallStatus = status == null ? "" : status;
+            this.mcpCallDetail = detail == null ? "" : detail;
+        }
+
+        private void recordMcpResult(long durationMs) {
+            this.mcpResultDurationMs = Math.max(0, durationMs);
+        }
+
+        private long mcpPlanDurationMs() {
+            return mcpPlanDurationMs;
+        }
+
+        private long mcpCallDurationMs() {
+            return mcpCallDurationMs;
+        }
+
+        private long mcpResultDurationMs() {
+            return mcpResultDurationMs;
+        }
+
+        private String mcpToolName() {
+            return mcpToolName;
+        }
+
+        private String mcpCallStatus() {
+            return mcpCallStatus;
+        }
+
+        private String mcpCallDetail() {
+            return mcpCallDetail;
         }
     }
 

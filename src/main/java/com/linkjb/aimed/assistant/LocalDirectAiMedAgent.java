@@ -12,7 +12,7 @@ import static dev.langchain4j.service.spring.AiServiceWiringMode.EXPLICIT;
         wiringMode = EXPLICIT,
         streamingChatModel = "localStreamingChatModel",
         chatMemoryProvider = "localChatMemoryProviderAiMed",
-        tools = {"appointmentTools", "dynamicMcpTools"}
+        tools = {"appointmentTools"}
 )
 public interface LocalDirectAiMedAgent {
 

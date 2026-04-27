@@ -358,7 +358,7 @@
         >
           <div
             v-for="(message, index) in messages"
-            :key="index"
+            :key="message.viewKey || `message-${index}`"
             :class="messageClass(message)"
           >
             <div class="message-avatar">
@@ -398,6 +398,14 @@
                 </article>
               </div>
               <div class="message-content" v-html="message.content"></div>
+              <div
+                v-if="!message.isUser && message.isTyping && latestStreamEvent(message)"
+                class="message-stream-event"
+              >
+                <strong>{{ latestStreamEvent(message).label || '工具处理中' }}</strong>
+                <span v-if="latestStreamEvent(message).detail">{{ latestStreamEvent(message).detail }}</span>
+                <small v-if="latestStreamEvent(message).durationMs > 0">{{ formatTraceDuration(latestStreamEvent(message).durationMs) }}</small>
+              </div>
               <div v-if="groupedCitations(message).length" class="message-citation-inline">
                 <span class="message-citation-inline-label">引用</span>
                 <el-popover
@@ -436,46 +444,7 @@
                   </div>
                 </el-popover>
               </div>
-              <div v-if="hasTraceDiagnostics(message)" class="message-trace-inline">
-                <el-popover
-                  trigger="click"
-                  placement="top"
-                  :width="360"
-                >
-                  <template #reference>
-                    <button class="message-trace-chip" type="button">
-                      链路 {{ formatTraceDuration(message.serverDurationMs) }}
-                    </button>
-                  </template>
-                  <div class="message-trace-popover">
-                    <div class="message-trace-head">
-                      <strong>回答链路</strong>
-                      <span>{{ traceModeLabel(message.toolMode) }}</span>
-                    </div>
-                    <small class="message-trace-meta">
-                      <span v-if="message.provider">{{ message.provider }}</span>
-                      <span v-if="message.intentType">意图 {{ message.intentType }}</span>
-                      <span v-if="message.routeTarget">路由 {{ message.routeTarget }}</span>
-                      <span>{{ message.ragApplied ? 'RAG 已执行' : 'RAG 已跳过' }}</span>
-                      <span v-if="message.firstTokenLatencyMs > 0">首字 {{ formatTraceDuration(message.firstTokenLatencyMs) }}</span>
-                      <span v-if="message.traceId">traceId {{ shortenInlineTraceId(message.traceId) }}</span>
-                    </small>
-                    <ul class="message-trace-stage-list">
-                      <li
-                        v-for="stage in message.traceStages"
-                        :key="stage.key"
-                        :class="{ skipped: stage.status === 'SKIPPED' }"
-                      >
-                        <div class="message-trace-stage-head">
-                          <strong>{{ stage.label }}</strong>
-                          <span>{{ formatTraceDuration(stage.durationMs) }}</span>
-                        </div>
-                        <p v-if="stage.detail">{{ stage.detail }}</p>
-                      </li>
-                    </ul>
-                  </div>
-                </el-popover>
-              </div>
+              <ChatTracePopover v-if="hasTraceDiagnostics(message)" :message="message" />
               <span
                 class="loading-dots"
                 v-if="message.isThinking || message.isTyping"
@@ -847,17 +816,24 @@ import MarkdownIt from 'markdown-it'
 import shulanLogo from '@/assets/shulan-logo.png'
 import { ElMessage } from 'element-plus'
 import AdminEntryActionButton from '@/components/AdminEntryActionButton.vue'
+import ChatTracePopover from '@/components/chat/ChatTracePopover.vue'
 import LogoutActionButton from '@/components/LogoutActionButton.vue'
 import { downloadChatMarkdown } from '@/lib/chatExport'
 import { compactCitationLabel, groupedCitations, normalizeCitation } from '@/lib/chatCitation'
+import {
+  LOCAL_OLLAMA,
+  LOCAL_OMLX,
+  QWEN_ONLINE,
+  QWEN_ONLINE_DEEP,
+  QWEN_ONLINE_FAST,
+  modelProviderOptions,
+  normalizeStoredProvider,
+  resolveComposerPlaceholder,
+  resolveModelProviderTip,
+} from '@/lib/chatModelOptions'
+import { extractStreamPayload } from '@/lib/chatStream'
 import { apiClient, authState, authorizedFetch, isAdmin, logout, markAuthActivity, syncAuthIdleTimeoutPolicy } from '@/lib/auth'
 import { confirmDanger } from '@/lib/confirmDialog'
-
-const LOCAL_OLLAMA = 'LOCAL_OLLAMA'
-const QWEN_ONLINE = 'QWEN_ONLINE'
-const QWEN_ONLINE_FAST = 'QWEN_ONLINE_FAST'
-const QWEN_ONLINE_DEEP = 'QWEN_ONLINE_DEEP'
-const STREAM_METADATA_MARKER = '[[AIMED_STREAM_METADATA]]'
 const MAX_CHAT_ATTACHMENT_BYTES = 1024 * 1024
 const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 2 * 1024 * 1024
 const MAX_CHAT_ATTACHMENT_COUNT = 3
@@ -917,7 +893,7 @@ const historyPageSize = 20
 const historyTotal = ref(0)
 const renamingHistoryId = ref(null)
 const renamingHistoryTitle = ref('')
-const selectedModelProvider = ref(LOCAL_OLLAMA)
+const selectedModelProvider = ref(LOCAL_OMLX)
 const modelPickerVisible = ref(false)
 const mobilePanelVisible = ref(false)
 const desktopSidebarCollapsed = ref(false)
@@ -942,45 +918,8 @@ let maxObservedViewportHeight = 0
 let viewportSyncTimers = []
 let historySearchTimer = null
 const attachmentPreviewUrls = new Set()
+let messageViewKeySeed = 0
 
-const modelProviderOptions = [
-  {
-    value: LOCAL_OLLAMA,
-    label: '本地 qwen3.5:27b',
-    shortLabel: 'qwen3.5:27b',
-    chipLabel: '本地 · qwen3.5:27b',
-    menuTitle: 'qwen3.5:27b',
-    menuSubtitle: '适合院内基础问答和隐私内容处理',
-    modeLabel: '本地',
-    modeShortLabel: '本地',
-    logoKind: 'local',
-    description: '适合院内基础问答和隐私内容处理',
-  },
-  {
-    value: QWEN_ONLINE_FAST,
-    label: '在线 qwen-plus',
-    shortLabel: 'qwen-plus',
-    chipLabel: '在线快答 · qwen-plus',
-    menuTitle: 'qwen-plus',
-    menuSubtitle: '更适合低延迟问答、普通症状咨询和院内信息查询',
-    modeLabel: '在线快答',
-    modeShortLabel: '快答',
-    logoKind: 'fast',
-    description: '更适合低延迟问答、普通症状咨询和院内信息查询',
-  },
-  {
-    value: QWEN_ONLINE_DEEP,
-    label: '在线 qwen3.6-plus',
-    shortLabel: 'qwen3.6-plus',
-    chipLabel: '在线深答 · qwen3.6-plus',
-    menuTitle: 'qwen3.6-plus',
-    menuSubtitle: '更适合复杂总结、多资料整合和长回答',
-    modeLabel: '在线深答',
-    modeShortLabel: '深答',
-    logoKind: 'deep',
-    description: '更适合复杂总结、多资料整合和长回答',
-  },
-]
 const currentModelOption = computed(
   () => modelProviderOptions.find((option) => option.value === selectedModelProvider.value) || modelProviderOptions[0]
 )
@@ -996,13 +935,7 @@ const currentUserDisplayName = computed(() => {
   }
   return '用户'
 })
-const currentModelProviderTip = computed(() =>
-  selectedModelProvider.value === LOCAL_OLLAMA
-    ? '本地模型适合院内基础问答和隐私内容处理。'
-    : selectedModelProvider.value === QWEN_ONLINE_FAST
-      ? '在线快答适合普通问答和低延迟场景。'
-      : '在线深答更适合复杂病情说明、长总结和多资料综合判断。'
-)
+const currentModelProviderTip = computed(() => resolveModelProviderTip(selectedModelProvider.value))
 const currentSessionDisplayId = computed(() => {
   if (!uuid.value) {
     return '会话 ID 待生成'
@@ -1027,19 +960,7 @@ const showDesktopQuickPrompts = computed(() =>
 const composerAutosize = computed(() =>
   isMobileViewport.value ? { minRows: 1, maxRows: 4 } : { minRows: 2, maxRows: 5 }
 )
-const composerPlaceholder = computed(() =>
-  isMobileViewport.value
-    ? (selectedModelProvider.value === LOCAL_OLLAMA
-      ? '直接提问或短句确认，回车发送'
-      : selectedModelProvider.value === QWEN_ONLINE_FAST
-        ? '输入普通症状或院内问题，回车发送'
-        : '输入复杂问题或多资料需求，回车发送')
-    : (selectedModelProvider.value === LOCAL_OLLAMA
-      ? '帮我概括这份资料的重点，结论尽量简短'
-      : selectedModelProvider.value === QWEN_ONLINE_FAST
-        ? '脑袋有点疼、鼻塞，应该先怎么处理'
-        : '请综合最新上传资料，说明诊疗要点、风险和下一步建议')
-)
+const composerPlaceholder = computed(() => resolveComposerPlaceholder(selectedModelProvider.value, isMobileViewport.value))
 const isWeChatMobile = computed(() => isMobileViewport.value && isWeChatBrowser.value)
 const isDesktopSidebarCollapsed = computed(() => !isMobileViewport.value && desktopSidebarCollapsed.value)
 const pageShellStyle = computed(() => ({
@@ -1196,6 +1117,16 @@ const normalizeTraceStage = (stage) => ({
   detail: stage?.detail || '',
 })
 
+const normalizeStreamEvent = (event) => ({
+  type: event?.type || '',
+  phase: event?.phase || '',
+  status: String(event?.status || 'RUNNING').toUpperCase(),
+  label: event?.label || '',
+  detail: event?.detail || '',
+  toolName: event?.toolName || '',
+  durationMs: Number(event?.durationMs || 0),
+})
+
 const applyStreamMetadata = (message, metadata) => {
   message.citations = (metadata?.citations || []).map(normalizeCitation)
   message.traceId = metadata?.traceId || ''
@@ -1208,6 +1139,30 @@ const applyStreamMetadata = (message, metadata) => {
   message.serverDurationMs = Number(metadata?.serverDurationMs || 0)
   message.firstTokenLatencyMs = Number(metadata?.firstTokenLatencyMs || 0)
   message.traceStages = Array.isArray(metadata?.traceStages) ? metadata.traceStages.map(normalizeTraceStage) : []
+}
+
+const applyHistoryTrace = (message, traceSource) => {
+  message.traceId = traceSource?.traceId || ''
+  message.provider = traceSource?.provider || ''
+  message.toolMode = traceSource?.toolMode || ''
+  message.intentType = traceSource?.intentType || ''
+  message.routeTarget = traceSource?.routeTarget || ''
+  message.ragApplied = Boolean(traceSource?.ragApplied)
+  message.ragSkipReason = traceSource?.ragSkipReason || ''
+  message.serverDurationMs = Number(traceSource?.serverDurationMs || 0)
+  message.firstTokenLatencyMs = Number(traceSource?.firstTokenLatencyMs || 0)
+  message.traceStages = Array.isArray(traceSource?.traceStages) ? traceSource.traceStages.map(normalizeTraceStage) : []
+}
+
+const applyStreamEvents = (message, events) => {
+  message.streamEvents = Array.isArray(events) ? events.map(normalizeStreamEvent) : []
+}
+
+const latestStreamEvent = (message) => {
+  if (!Array.isArray(message?.streamEvents) || !message.streamEvents.length) {
+    return null
+  }
+  return message.streamEvents[message.streamEvents.length - 1]
 }
 
 const hasTraceDiagnostics = (message) =>
@@ -1224,34 +1179,18 @@ const formatTraceDuration = (value) => {
   return `${(duration / 1000).toFixed(duration >= 10_000 ? 0 : 1)} s`
 }
 
-const traceModeLabel = (toolMode) => {
-  if (toolMode === 'APPOINTMENT') {
-    return '挂号工具链'
-  }
-  if (toolMode === 'FAST') {
-    return '在线快答链'
-  }
-  if (toolMode === 'DEEP') {
-    return '在线深答链'
-  }
-  return '标准链路'
-}
-
-const shortenInlineTraceId = (traceId) => {
-  if (!traceId || traceId.length <= 18) {
-    return traceId
-  }
-  return `${traceId.slice(0, 10)}...${traceId.slice(-6)}`
-}
+const nextMessageViewKey = (prefix = 'msg') => `${prefix}-${Date.now()}-${messageViewKeySeed++}`
 
 const pushSystemMessage = (content) => {
   messages.value.push({
+    viewKey: nextMessageViewKey('system'),
     kind: 'system',
     isUser: false,
     rawContent: content,
     content: convertStreamOutput(content),
     isTyping: false,
     isThinking: false,
+    streamEvents: [],
   })
   shouldStickToBottom.value = true
 }
@@ -1309,6 +1248,7 @@ const scrollBottomIntoView = (force = false) => {
 const showWelcomeMessage = () => {
   messages.value = [
     {
+      viewKey: nextMessageViewKey('welcome'),
       isUser: false,
       rawContent: welcomeMessageMarkdown,
       content: convertStreamOutput(welcomeMessageMarkdown),
@@ -1321,16 +1261,9 @@ const showWelcomeMessage = () => {
 
 const initModelProvider = () => {
   const storedProvider = localStorage.getItem('chat_model_provider')
-  if (storedProvider === QWEN_ONLINE || storedProvider === QWEN_ONLINE_FAST) {
-    selectedModelProvider.value = QWEN_ONLINE_FAST
-    localStorage.setItem('chat_model_provider', QWEN_ONLINE_FAST)
-    return
-  }
-  if (storedProvider === QWEN_ONLINE_DEEP) {
-    selectedModelProvider.value = QWEN_ONLINE_DEEP
-    return
-  }
-  selectedModelProvider.value = LOCAL_OLLAMA
+  const normalizedProvider = normalizeStoredProvider(storedProvider)
+  selectedModelProvider.value = normalizedProvider
+  localStorage.setItem('chat_model_provider', normalizedProvider)
 }
 
 const toggleHistoryExpanded = () => {
@@ -1468,6 +1401,16 @@ const persistCurrentConversationSnapshot = () => {
         }))
         : [],
       citations: Array.isArray(message.citations) ? message.citations.map((citation) => ({ ...citation })) : [],
+      traceId: message.traceId || '',
+      provider: message.provider || '',
+      toolMode: message.toolMode || '',
+      intentType: message.intentType || '',
+      routeTarget: message.routeTarget || '',
+      ragApplied: Boolean(message.ragApplied),
+      ragSkipReason: message.ragSkipReason || '',
+      serverDurationMs: Number(message.serverDurationMs || 0),
+      firstTokenLatencyMs: Number(message.firstTokenLatencyMs || 0),
+      traceStages: Array.isArray(message.traceStages) ? message.traceStages.map((stage) => ({ ...stage })) : [],
     }))
     .filter((message) => message.content)
 
@@ -1535,40 +1478,46 @@ const updateHistoryItemLocal = (updatedItem) => {
 }
 
 // 后端 visible history 已经是“可展示语义”，这里只负责补前端渲染需要的派生字段。
-const mapHistoryMessageToViewMessage = (message) => ({
-  isUser: !!message.user,
-  rawContent: message.content || '',
-  content: convertStreamOutput(message.content || ''),
-  attachments: Array.isArray(message.attachments)
-    ? message.attachments.map((attachment, index) => ({
-      id: attachment.id || `${message.user ? 'user' : 'assistant'}-${index}-${attachment.name || 'attachment'}`,
-      name: attachment.name || '未命名附件',
-      size: attachment.size ?? 0,
-      contentType: attachment.contentType || '',
-      extension: attachment.extension || '',
-      isImage: Boolean(attachment.image ?? attachment.isImage),
-      kindLabel: attachment.kindLabel || ((attachment.image ?? attachment.isImage) ? '图片' : '文件'),
-      badgeLabel: attachmentBadgeLabel(attachment),
-      sizeLabel: typeof attachment.size === 'number' ? formatAttachmentSize(attachment.size) : '',
-      previewUrl: attachment.previewUrl || '',
-      previewWidth: attachment.previewWidth ?? null,
-      previewHeight: attachment.previewHeight ?? null,
-    }))
-    : [],
-  citations: Array.isArray(message.citations) ? message.citations.map(normalizeCitation) : [],
-  traceId: '',
-  provider: '',
-  toolMode: '',
-  intentType: '',
-  routeTarget: '',
-  ragApplied: false,
-  ragSkipReason: '',
-  serverDurationMs: 0,
-  firstTokenLatencyMs: 0,
-  traceStages: [],
-  isTyping: false,
-  isThinking: false,
-})
+const mapHistoryMessageToViewMessage = (message) => {
+  const viewMessage = {
+    viewKey: nextMessageViewKey(message.user ? 'history-user' : 'history-ai'),
+    isUser: !!message.user,
+    rawContent: message.content || '',
+    content: convertStreamOutput(message.content || ''),
+    attachments: Array.isArray(message.attachments)
+      ? message.attachments.map((attachment, index) => ({
+        id: attachment.id || `${message.user ? 'user' : 'assistant'}-${index}-${attachment.name || 'attachment'}`,
+        name: attachment.name || '未命名附件',
+        size: attachment.size ?? 0,
+        contentType: attachment.contentType || '',
+        extension: attachment.extension || '',
+        isImage: Boolean(attachment.image ?? attachment.isImage),
+        kindLabel: attachment.kindLabel || ((attachment.image ?? attachment.isImage) ? '图片' : '文件'),
+        badgeLabel: attachmentBadgeLabel(attachment),
+        sizeLabel: typeof attachment.size === 'number' ? formatAttachmentSize(attachment.size) : '',
+        previewUrl: attachment.previewUrl || '',
+        previewWidth: attachment.previewWidth ?? null,
+        previewHeight: attachment.previewHeight ?? null,
+      }))
+      : [],
+    citations: Array.isArray(message.citations) ? message.citations.map(normalizeCitation) : [],
+    traceId: '',
+    provider: '',
+    toolMode: '',
+    intentType: '',
+    routeTarget: '',
+    ragApplied: false,
+    ragSkipReason: '',
+    serverDurationMs: 0,
+    firstTokenLatencyMs: 0,
+    traceStages: [],
+    isTyping: false,
+    isThinking: false,
+    streamEvents: [],
+  }
+  applyHistoryTrace(viewMessage, message)
+  return viewMessage
+}
 
 const fetchChatHistories = async () => {
   clearHistorySearchTimer()
@@ -1644,6 +1593,7 @@ const restoreChatHistory = async (memoryId, { silent = false } = {}) => {
     messages.value = Array.isArray(data.messages) && data.messages.length
       ? data.messages.map(mapHistoryMessageToViewMessage)
       : [{
+        viewKey: nextMessageViewKey('welcome'),
         isUser: false,
         rawContent: welcomeMessageMarkdown,
         content: convertStreamOutput(welcomeMessageMarkdown),
@@ -1823,7 +1773,7 @@ const toggleDesktopSidebar = () => {
 
 const setModelProvider = (provider) => {
   markChatActivity()
-  selectedModelProvider.value = [QWEN_ONLINE_FAST, QWEN_ONLINE_DEEP].includes(provider) ? provider : LOCAL_OLLAMA
+  selectedModelProvider.value = [QWEN_ONLINE_FAST, QWEN_ONLINE_DEEP].includes(provider) ? provider : LOCAL_OMLX
   modelPickerVisible.value = false
   localStorage.setItem('chat_model_provider', selectedModelProvider.value)
 }
@@ -2377,9 +2327,10 @@ const streamChatResponse = async (message, attachmentsSnapshot, lastMsg) => {
       }
 
       lastMsg.rawContent += chunkText
-      const parsed = extractStreamMetadata(lastMsg.rawContent)
+      const parsed = extractStreamPayload(lastMsg.rawContent)
       lastMsg.content = convertStreamOutput(parsed.content)
       applyStreamMetadata(lastMsg, parsed.metadata)
+      applyStreamEvents(lastMsg, parsed.events)
       scrollToBottom()
     }
   } finally {
@@ -2394,6 +2345,7 @@ const sendRequest = (message) => {
   const attachmentsSnapshot = [...chatAttachments.value]
   const displayMessage = message || '请结合我上传的文件回答。'
   const userMsg = {
+    viewKey: nextMessageViewKey('live-user'),
     isUser: true,
     rawContent: displayMessage,
     content: convertStreamOutput(displayMessage),
@@ -2407,6 +2359,7 @@ const sendRequest = (message) => {
   }
 
   const botMsg = {
+    viewKey: nextMessageViewKey('live-ai'),
     isUser: false,
     content: '',
     rawContent: '',
@@ -2421,6 +2374,7 @@ const sendRequest = (message) => {
     serverDurationMs: 0,
     firstTokenLatencyMs: 0,
     traceStages: [],
+    streamEvents: [],
     isTyping: true,
     isThinking: false,
   }
@@ -2462,28 +2416,11 @@ const sendRequest = (message) => {
 }
 
 const finalizeAssistantMessage = (message) => {
-  const { content, metadata } = extractStreamMetadata(message.rawContent)
+  const { content, metadata, events } = extractStreamPayload(message.rawContent)
   message.rawContent = content
   message.content = convertStreamOutput(content)
   applyStreamMetadata(message, metadata)
-}
-
-const extractStreamMetadata = (rawContent) => {
-  if (!rawContent || !rawContent.includes(STREAM_METADATA_MARKER)) {
-    return { content: rawContent, metadata: null }
-  }
-  const markerIndex = rawContent.lastIndexOf(STREAM_METADATA_MARKER)
-  const content = rawContent.slice(0, markerIndex)
-  const metadataText = rawContent.slice(markerIndex + STREAM_METADATA_MARKER.length).trim()
-  try {
-    return {
-      content,
-      metadata: metadataText ? JSON.parse(metadataText) : null,
-    }
-  } catch (error) {
-    console.error('解析回答引用元数据失败:', error)
-    return { content: rawContent, metadata: null }
-  }
+  applyStreamEvents(message, events)
 }
 
 const initUUID = async () => {
@@ -2513,7 +2450,7 @@ const resolveRequestError = (error) => {
     return `当前服务暂时不可用：${serverMessage}`
   }
 
-  return '当前模型服务暂时不稳定，请稍后重试。若持续失败，请检查本机 Ollama 或在线模型连通性。'
+  return '当前模型服务暂时不稳定，请稍后重试。若持续失败，请检查本机 OMLX 或在线模型连通性。'
 }
 
 const buildTraceableMessage = (message, traceId) => {
@@ -4296,6 +4233,29 @@ watch(isAdmin, (value) => {
   overflow-wrap: anywhere;
 }
 
+.message-stream-event {
+  display: grid;
+  gap: 2px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(239, 247, 251, 0.92);
+  border: 1px solid rgba(102, 146, 173, 0.14);
+}
+
+.message-stream-event strong {
+  color: #31566a;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.message-stream-event span,
+.message-stream-event small {
+  color: #5f7b87;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .message-citation-inline {
   display: flex;
   flex-wrap: wrap;
@@ -4393,94 +4353,6 @@ watch(isAdmin, (value) => {
   font-size: 13px;
   font-weight: 700;
   cursor: pointer;
-}
-
-.message-trace-inline {
-  margin-top: 10px;
-}
-
-.message-trace-chip {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(124, 158, 201, 0.22);
-  background: rgba(241, 246, 255, 0.94);
-  color: #466985;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
-}
-
-.message-trace-chip:hover {
-  transform: translateY(-1px);
-  border-color: rgba(124, 158, 201, 0.34);
-  background: rgba(232, 241, 255, 0.98);
-}
-
-.message-trace-popover {
-  display: grid;
-  gap: 10px;
-}
-
-.message-trace-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.message-trace-head strong {
-  color: #1d444b;
-}
-
-.message-trace-head span {
-  color: #58727e;
-  font-size: 12px;
-}
-
-.message-trace-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  color: #678189;
-  line-height: 1.5;
-}
-
-.message-trace-stage-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 8px;
-}
-
-.message-trace-stage-list li {
-  padding: 10px 12px;
-  border-radius: 14px;
-  background: rgba(246, 250, 253, 0.98);
-}
-
-.message-trace-stage-list li.skipped {
-  background: rgba(245, 246, 247, 0.98);
-}
-
-.message-trace-stage-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  color: #275762;
-}
-
-.message-trace-stage-list p {
-  margin: 6px 0 0;
-  color: #678089;
-  font-size: 12px;
-  line-height: 1.5;
 }
 
 .message-content :deep(*) {

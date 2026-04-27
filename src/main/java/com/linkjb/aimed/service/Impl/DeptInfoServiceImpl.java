@@ -12,6 +12,8 @@ import net.sourceforge.pinyin4j.format.HanyuPinyinCaseType;
 import net.sourceforge.pinyin4j.format.HanyuPinyinOutputFormat;
 import net.sourceforge.pinyin4j.format.HanyuPinyinToneType;
 import net.sourceforge.pinyin4j.format.exception.BadHanyuPinyinOutputFormatCombination;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -27,6 +29,7 @@ import java.util.stream.Collectors;
 @Service
 public class DeptInfoServiceImpl implements DeptInfoService {
 
+    private static final Logger log = LoggerFactory.getLogger(DeptInfoServiceImpl.class);
     private final DeptInfoMapper deptInfoMapper;
 
     public DeptInfoServiceImpl(DeptInfoMapper deptInfoMapper) {
@@ -228,7 +231,7 @@ public class DeptInfoServiceImpl implements DeptInfoService {
                         code.append(pinyinArray[0].charAt(0));
                     }
                 } catch (BadHanyuPinyinOutputFormatCombination e) {
-                    e.printStackTrace();
+                    log.warn("dept.pinyin.convert.failed char={}", c, e);
                 }
             } else {
                 // 非中文字符直接追加（如数字、字母）

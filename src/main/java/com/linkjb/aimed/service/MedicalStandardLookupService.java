@@ -23,6 +23,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * 疾病标准查询与维护服务。
@@ -36,6 +38,10 @@ public class MedicalStandardLookupService {
     private final MedicalConceptAliasMapper medicalConceptAliasMapper;
     private final MedicalSymptomMappingMapper medicalSymptomMappingMapper;
     private final MedicalDocMappingMapper medicalDocMappingMapper;
+    private static final long LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000L;
+    private final ConcurrentMap<String, CacheEntry<List<KnowledgeRetrievalMatchedDiseaseEntity>>> diseaseMatchCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, CacheEntry<List<String>>> symptomMatchCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, CacheEntry<List<String>>> chiefComplaintMatchCache = new ConcurrentHashMap<>();
 
     public MedicalStandardLookupService(MedicalConceptMapper medicalConceptMapper,
                                         MedicalConceptAliasMapper medicalConceptAliasMapper,
@@ -73,6 +79,11 @@ public class MedicalStandardLookupService {
         if (!StringUtils.hasText(normalized)) {
             return List.of();
         }
+        String cacheKey = normalized + "#" + Math.max(1, limit);
+        CacheEntry<List<KnowledgeRetrievalMatchedDiseaseEntity>> cached = diseaseMatchCache.get(cacheKey);
+        if (cached != null && !cached.expired()) {
+            return cached.value();
+        }
         Set<String> tokens = new LinkedHashSet<>();
         KnowledgeSearchLexicon.detectMedicalAnchors(normalized).forEach(tokens::add);
         KnowledgeSearchLexicon.extractMedicalRewriteHints(normalized).forEach(tokens::add);
@@ -80,8 +91,8 @@ public class MedicalStandardLookupService {
             tokens.add(normalized);
         }
         Map<String, MatchInfo> matches = new LinkedHashMap<>();
-        tokens.forEach(token -> collectMatchesForToken(token, matches, limit));
-        return loadConceptsByPriority(matches.entrySet().stream()
+        tokens.stream().limit(8).forEach(token -> collectMatchesForToken(token, matches, limit));
+        List<KnowledgeRetrievalMatchedDiseaseEntity> result = loadConceptsByPriority(matches.entrySet().stream()
                         .collect(java.util.stream.Collectors.toMap(
                                 Map.Entry::getKey,
                                 entry -> (int) Math.round(entry.getValue().score() * 100),
@@ -101,6 +112,8 @@ public class MedicalStandardLookupService {
                     );
                 })
                 .toList();
+        diseaseMatchCache.put(cacheKey, CacheEntry.of(result));
+        return result;
     }
 
     public List<String> findMatchedSymptoms(String query) {
@@ -108,15 +121,13 @@ public class MedicalStandardLookupService {
         if (!StringUtils.hasText(normalized)) {
             return List.of();
         }
-        return medicalSymptomMappingMapper.selectList(new LambdaQueryWrapper<MedicalSymptomMapping>()
-                        .eq(MedicalSymptomMapping::getEnabled, true)
-                        .and(wrapper -> wrapper.like(MedicalSymptomMapping::getSymptomTerm, normalized)
-                                .or().like(MedicalSymptomMapping::getChiefComplaintTerm, normalized)))
-                .stream()
-                .flatMap(item -> java.util.stream.Stream.of(item.getSymptomTerm(), item.getChiefComplaintTerm()))
-                .filter(StringUtils::hasText)
-                .distinct()
-                .toList();
+        CacheEntry<List<String>> cached = symptomMatchCache.get(normalized);
+        if (cached != null && !cached.expired()) {
+            return cached.value();
+        }
+        List<String> result = findMatchedMappingTerms(normalized, false);
+        symptomMatchCache.put(normalized, CacheEntry.of(result));
+        return result;
     }
 
     public List<String> findMatchedChiefComplaints(String query) {
@@ -124,14 +135,13 @@ public class MedicalStandardLookupService {
         if (!StringUtils.hasText(normalized)) {
             return List.of();
         }
-        return medicalSymptomMappingMapper.selectList(new LambdaQueryWrapper<MedicalSymptomMapping>()
-                        .eq(MedicalSymptomMapping::getEnabled, true)
-                        .like(MedicalSymptomMapping::getChiefComplaintTerm, normalized))
-                .stream()
-                .map(MedicalSymptomMapping::getChiefComplaintTerm)
-                .filter(StringUtils::hasText)
-                .distinct()
-                .toList();
+        CacheEntry<List<String>> cached = chiefComplaintMatchCache.get(normalized);
+        if (cached != null && !cached.expired()) {
+            return cached.value();
+        }
+        List<String> result = findMatchedMappingTerms(normalized, true);
+        chiefComplaintMatchCache.put(normalized, CacheEntry.of(result));
+        return result;
     }
 
     public List<MedicalSymptomMappingItem> listSymptomMappings(String keyword) {
@@ -213,12 +223,14 @@ public class MedicalStandardLookupService {
         } else {
             medicalSymptomMappingMapper.updateById(existing);
         }
+        clearLookupCaches();
         return toItem(existing, entity);
     }
 
     public void deleteSymptomMapping(Long id) {
         if (id != null) {
             medicalSymptomMappingMapper.deleteById(id);
+            clearLookupCaches();
         }
     }
 
@@ -305,6 +317,57 @@ public class MedicalStandardLookupService {
                 });
     }
 
+    private List<String> findMatchedMappingTerms(String normalized, boolean chiefOnly) {
+        Set<String> tokens = lookupTokens(normalized);
+        if (tokens.isEmpty()) {
+            return List.of();
+        }
+        Set<String> result = new LinkedHashSet<>();
+        for (String token : tokens) {
+            LambdaQueryWrapper<MedicalSymptomMapping> wrapper = new LambdaQueryWrapper<MedicalSymptomMapping>()
+                    .eq(MedicalSymptomMapping::getEnabled, true)
+                    .last("LIMIT 30");
+            if (chiefOnly) {
+                wrapper.like(MedicalSymptomMapping::getChiefComplaintTerm, token);
+            } else {
+                wrapper.and(nested -> nested.like(MedicalSymptomMapping::getSymptomTerm, token)
+                        .or().like(MedicalSymptomMapping::getChiefComplaintTerm, token));
+            }
+            medicalSymptomMappingMapper.selectList(wrapper).forEach(item -> {
+                if (!chiefOnly && StringUtils.hasText(item.getSymptomTerm())) {
+                    result.add(item.getSymptomTerm());
+                }
+                if (StringUtils.hasText(item.getChiefComplaintTerm())) {
+                    result.add(item.getChiefComplaintTerm());
+                }
+            });
+            if (result.size() >= 20) {
+                break;
+            }
+        }
+        return result.stream().limit(20).toList();
+    }
+
+    private Set<String> lookupTokens(String normalized) {
+        Set<String> tokens = new LinkedHashSet<>();
+        KnowledgeSearchLexicon.detectMedicalAnchors(normalized).forEach(tokens::add);
+        KnowledgeSearchLexicon.extractMedicalRewriteHints(normalized).forEach(tokens::add);
+        if (tokens.isEmpty() && normalized.length() <= 12) {
+            tokens.add(normalized);
+        }
+        return tokens.stream()
+                .filter(StringUtils::hasText)
+                .filter(token -> token.length() >= 2 && token.length() <= 16)
+                .limit(8)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    private void clearLookupCaches() {
+        diseaseMatchCache.clear();
+        symptomMatchCache.clear();
+        chiefComplaintMatchCache.clear();
+    }
+
     private void putBetterMatch(Map<String, MatchInfo> matches, String conceptCode, String matchType) {
         if (!StringUtils.hasText(conceptCode)) {
             return;
@@ -361,5 +424,15 @@ public class MedicalStandardLookupService {
     }
 
     private record MatchInfo(String matchType, double score) {
+    }
+
+    private record CacheEntry<T>(T value, long expiresAt) {
+        static <T> CacheEntry<T> of(T value) {
+            return new CacheEntry<>(value, System.currentTimeMillis() + LOOKUP_CACHE_TTL_MS);
+        }
+
+        boolean expired() {
+            return System.currentTimeMillis() > expiresAt;
+        }
     }
 }
